@@ -1,0 +1,23 @@
+[toolchain]
+
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+tilt_programs = "vpopBXK5VHWiUqSggR6iE1skwbxMnWy4du31265Neky"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+setup = "bunx tsx migrations/setup.ts"
+reveal = "bunx tsx migrations/reveal.ts"
+claim = "bunx tsx migrations/claim.ts"
+init_admin = "bunx tsx migrations/init_admin.ts"
+resolve = "bunx tsx migrations/resolve.ts"
