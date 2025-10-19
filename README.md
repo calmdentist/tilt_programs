@@ -1,11 +1,13 @@
-# Tilt - Provably fair, onchain poker on Solana
+# Tilt - Permissionless, provably fair onchain poker on Solana
 
-A fully on-chain, provably fair poker protocol on Solana featuring:
+A fully on-chain, permissionless, provably fair poker protocol on Solana featuring:
 - **2-player heads-up poker** (fast-fold format)
 - **Commit-reveal randomness** for provable fairness
 - **Complete poker hand evaluation** with standard Texas Hold'em rules
 - **Time-limited actions** with timeout protection
 - **Persistent player statistics**
+
+The fast-fold format means players are paired with someone new every hand - this marginalizes the edge gained from poker solvers. The 2 player format makes collusion impossible.
 
 ## 🎯 Architecture Overview
 
