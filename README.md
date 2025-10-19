@@ -1,4 +1,4 @@
-# Tilt - Provably Fair On-Chain Poker Protocol
+# Tilt - Provably fair, onchain poker on Solana
 
 A fully on-chain, provably fair poker protocol on Solana featuring:
 - **2-player heads-up poker** (fast-fold format)

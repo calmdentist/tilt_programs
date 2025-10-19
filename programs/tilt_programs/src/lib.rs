@@ -19,13 +19,29 @@ pub mod tilt_programs {
         instructions::initialize_player(ctx)
     }
 
+    /// Initialize a player balance account
+    pub fn initialize_balance(ctx: Context<InitializeBalance>) -> Result<()> {
+        instructions::initialize_balance(ctx)
+    }
+
+    /// Deposit USDC into player balance
+    pub fn deposit_funds(ctx: Context<DepositFunds>, amount: u64) -> Result<()> {
+        instructions::deposit_funds(ctx, amount)
+    }
+
+    /// Withdraw USDC from player balance
+    pub fn withdraw_funds(ctx: Context<WithdrawFunds>, amount: u64) -> Result<()> {
+        instructions::withdraw_funds(ctx, amount)
+    }
+
     /// Create a new game with player 1's commitment
     pub fn create_game(
         ctx: Context<CreateGame>,
         stake_amount: u64,
         commitment: [u8; 32],
+        game_id: u64,
     ) -> Result<()> {
-        instructions::create_game(ctx, stake_amount, commitment)
+        instructions::create_game(ctx, stake_amount, commitment, game_id)
     }
 
     /// Player 2 joins the game with their commitment

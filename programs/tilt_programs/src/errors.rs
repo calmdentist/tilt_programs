@@ -70,5 +70,20 @@ pub enum PokerError {
 
     #[msg("Minimum raise not met")]
     MinimumRaiseNotMet,
+    
+    #[msg("Insufficient balance to withdraw")]
+    InsufficientBalance,
+    
+    #[msg("Insufficient balance to join game")]
+    InsufficientBalanceToJoin,
+    
+    #[msg("Invalid withdrawal amount")]
+    InvalidWithdrawalAmount,
+    
+    #[msg("Invalid deposit amount")]
+    InvalidDepositAmount,
+    
+    #[msg("All-in amount exceeds stack")]
+    AllInExceedsStack,
 }
 
