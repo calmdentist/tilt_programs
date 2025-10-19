@@ -2,9 +2,11 @@
 
 ## 1. Overview
 
-This document outlines a cryptographic protocol for implementing a secure, trustless, two-player (heads-up) poker game on the Solana blockchain. The core challenge is to manage the deck and player hands without a central, trusted dealer, ensuring that no player has an unfair advantage or access to hidden information.
+This document outlines a cryptographic protocol for implementing a secure, trustless, two-player (heads-up) poker game on the Solana blockchain. The core challenge is to manage the deck and player hands without a central, trusted dealer, ensuring that no player has an unfair advantage or access to hidden information. Permissionless, provably fair, unstoppable poker.
 
-This is achieved using a "mental poker" approach, where players collaboratively shuffle and encrypt the deck.
+The protocol uses a heads-up (2 player), fast-fold (pair with new player after each hand) model, which mitigates colluding and the use of solvers to a large degree, if not entirely.
+
+This is achieved using a commutative encryption scheme - Polhig-Hellman - and a bespoke architecture with the property that players only place 1 transaction to create/join a game, and 1 transaction per action (call, bet, fold, etc). CUs are optimized so that the most intensive instruction consumes less than 400,000 CUs.
 
 ## 2. The Protocol
 
@@ -24,7 +26,10 @@ At the end of this phase, the 9 cards for the hand are committed to the chain, a
 
 During gameplay, cards are revealed to individual players (pocket cards) or both players (community cards) without exposing the rest of the deck.
 
-1.  **Dealing Pocket Cards**: To deal a card to Player 1, Player 2 first provides the singly-decrypted card to Player 1 (decrypted with Player 2's key). Player 1 can then fully decrypt it locally. This process is non-custodial and happens via communication between the players' clients. The program only needs to know which encrypted cards were assigned to which player.
+1.  **Dealing Pocket Cards**: To deal a card to Player 1, Player 2 provides the singly-decrypted card to Player 1 (decrypted with Player 2's key). This happens via off-chain communication.
+    *   **Client-Side Verification**: Before Player 1 accepts and decrypts the card, their client **must** perform a crucial verification step. The client re-encrypts the received card with Player 2's public key and confirms that the result matches the original doubly-encrypted card stored on-chain. This proves Player 2 acted honestly.
+    *   If the verification fails, Player 2 is considered to be uncooperative, and Player 1 can claim victory via the timeout mechanism.
+    *   This entire process is mirrored for Player 2's cards. The program only needs to know which encrypted cards were assigned to which player.
 2.  **Dealing Community Cards**: To reveal a community card (e.g., on the flop), a sequential, timed reveal process is initiated on-chain. Player 1 must first submit their decryption of the card(s). Then, Player 2 has a fixed time limit to submit their decryption.
     *   **Progressive Verification**: As soon as the plaintext for a community card (or set of cards, like the flop) is revealed to the program, the program **immediately verifies it** by re-encrypting the plaintext with the players' public keys and checking it against the stored encrypted version. This distributes the computational load and ensures fraud is detected instantly.
     *   If a player fails to act within their time limit, they forfeit the pot (see Liveness and Security).
