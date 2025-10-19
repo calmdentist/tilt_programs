@@ -85,5 +85,26 @@ pub enum PokerError {
     
     #[msg("All-in amount exceeds stack")]
     AllInExceedsStack,
+    
+    #[msg("Card verification failed - encrypted card doesn't match plaintext")]
+    CardVerificationFailed,
+    
+    #[msg("Invalid encrypted cards - must provide exactly 9 cards")]
+    InvalidEncryptedCards,
+    
+    #[msg("Reveal deadline has not been reached")]
+    RevealDeadlineNotReached,
+    
+    #[msg("Must provide decryption shares")]
+    MissingDecryptionShares,
+    
+    #[msg("Player has already revealed their hand")]
+    AlreadyRevealedHand,
+    
+    #[msg("Opponent has not revealed their hand yet")]
+    OpponentNotRevealed,
+    
+    #[msg("Invalid ephemeral public key")]
+    InvalidEphemeralKey,
 }
 

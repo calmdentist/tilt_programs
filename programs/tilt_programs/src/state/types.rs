@@ -2,15 +2,20 @@ use anchor_lang::prelude::*;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
 pub enum GameStage {
-    WaitingForPlayers,
-    WaitingForCommitments,
-    WaitingForReveals,
-    PreFlop,
-    Flop,
-    Turn,
-    River,
+    WaitingForPlayer2,
+    PreFlopBetting,
+    AwaitingFlopReveal,
+    AwaitingPlayer2FlopShare,
+    PostFlopBetting,
+    AwaitingTurnReveal,
+    AwaitingPlayer2TurnShare,
+    PostTurnBetting,
+    AwaitingRiverReveal,
+    AwaitingPlayer2RiverShare,
+    PostRiverBetting,
     Showdown,
-    Completed,
+    AwaitingPlayer2ShowdownReveal,
+    Finished,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +45,18 @@ impl Card {
         // Returns value for comparison (2=2, 3=3, ..., 10=10, J=11, Q=12, K=13, A=14)
         self.rank() + 2
     }
+}
+
+/// Encrypted card representation (256-bit for Pohlig-Hellman)
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EncryptedCard {
+    pub data: [u8; 32], // 256-bit encrypted value
+}
+
+/// Ephemeral public key for commutative encryption
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EphemeralPubkey {
+    pub data: [u8; 32], // 256-bit public key
 }
 
 // /// Hand rankings (lower is better, like in poker)

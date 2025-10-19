@@ -4,48 +4,124 @@ use crate::state::*;
 use crate::errors::*;
 use crate::poker;
 
-/// Resolve the game and determine winner
-pub fn resolve_game(mut ctx: Context<ResolveGame>) -> Result<()> {
+/// Resolve hand at showdown - Two step process
+/// Step 1: First player reveals their pocket cards
+/// Step 2: Second player reveals their pocket cards, then winner is determined
+pub fn resolve_hand(mut ctx: Context<ResolveGame>) -> Result<()> {
     let game = &mut ctx.accounts.game_state;
+    let player = ctx.accounts.player.key();
+    let clock = Clock::get()?;
     
     require!(
-        game.stage == GameStage::Showdown,
+        game.stage == GameStage::Showdown || game.stage == GameStage::AwaitingPlayer2ShowdownReveal,
         PokerError::InvalidGameStage
     );
     
-    // Evaluate both hands
-    let player1_score = poker::find_best_hand(&game.player1_hand, &game.community_cards).1;
-    let player2_score = poker::find_best_hand(&game.player2_hand, &game.community_cards).1;
+    let is_player1 = player == game.player1;
     
-    // Store pot value before modification
-    let pot_amount = game.pot;
-    let stake = game.stake_amount as i64;
-    
-    // Determine winner and winnings
-    let (p1_win, p2_win) = if player1_score > player2_score {
-        game.winner = Some(game.player1);
-        game.winning_hand_rank = Some((player1_score >> 20) as u16);
-        (pot_amount, 0)
-    } else if player2_score > player1_score {
-        game.winner = Some(game.player2);
-        game.winning_hand_rank = Some((player2_score >> 20) as u16);
-        (0, pot_amount)
-    } else {
-        game.winner = None;
-        (pot_amount / 2, pot_amount / 2)
-    };
-    
-    game.stage = GameStage::Completed;
-    
-    // Transfer pot from game vault to program vault
-    if pot_amount > 0 {
-        transfer_pot_to_vault(&ctx, pot_amount)?;
+    if game.stage == GameStage::Showdown {
+        // First player revealing their hand
+        require!(
+            !game.player1_revealed_hand && !game.player2_revealed_hand,
+            PokerError::AlreadyRevealedHand
+        );
+        
+        // Mark player as having revealed
+        if is_player1 {
+            game.player1_revealed_hand = true;
+        } else {
+            game.player2_revealed_hand = true;
+        }
+        
+        // Set deadline for other player to reveal
+        game.reveal_deadline = clock.unix_timestamp + game.action_timeout;
+        game.stage = GameStage::AwaitingPlayer2ShowdownReveal;
+        game.last_action_at = clock.unix_timestamp;
+        
+        return Ok(());
     }
     
-    // Update stats and balances
-    update_player_stats(&mut ctx.accounts, p1_win, p2_win, stake)?;
+    if game.stage == GameStage::AwaitingPlayer2ShowdownReveal {
+        // Second player revealing their hand
+        require!(
+            (is_player1 && !game.player1_revealed_hand) || (!is_player1 && !game.player2_revealed_hand),
+            PokerError::AlreadyRevealedHand
+        );
+        
+        // Mark player as having revealed
+        if is_player1 {
+            game.player1_revealed_hand = true;
+        } else {
+            game.player2_revealed_hand = true;
+        }
+        
+        // Verify both players' pocket cards against encrypted versions
+        let p1_encrypted = game.get_player1_encrypted_cards();
+        let p2_encrypted = game.get_player2_encrypted_cards();
+        
+        // Verify player 1's cards
+        require!(
+            game.verify_card(game.player1_hand[0], &p1_encrypted[0]),
+            PokerError::CardVerificationFailed
+        );
+        require!(
+            game.verify_card(game.player1_hand[1], &p1_encrypted[1]),
+            PokerError::CardVerificationFailed
+        );
+        
+        // Verify player 2's cards
+        require!(
+            game.verify_card(game.player2_hand[0], &p2_encrypted[0]),
+            PokerError::CardVerificationFailed
+        );
+        require!(
+            game.verify_card(game.player2_hand[1], &p2_encrypted[1]),
+            PokerError::CardVerificationFailed
+        );
+        
+        // Evaluate both hands
+        let player1_score = poker::find_best_hand(&game.player1_hand, &game.community_cards).1;
+        let player2_score = poker::find_best_hand(&game.player2_hand, &game.community_cards).1;
+        
+        // Store pot value before modification
+        let pot_amount = game.pot;
+        let stake = game.stake_amount as i64;
+        
+        // Return bonds to both players
+        let total_amount = pot_amount + game.player1_bond + game.player2_bond;
+        
+        // Determine winner and winnings (including bond returns)
+        let (p1_win, p2_win) = if player1_score > player2_score {
+            game.winner = Some(game.player1);
+            game.winning_hand_rank = Some((player1_score >> 20) as u16);
+            (pot_amount + game.player1_bond, game.player2_bond)
+        } else if player2_score > player1_score {
+            game.winner = Some(game.player2);
+            game.winning_hand_rank = Some((player2_score >> 20) as u16);
+            (game.player1_bond, pot_amount + game.player2_bond)
+        } else {
+            game.winner = None;
+            let pot_split = pot_amount / 2;
+            (pot_split + game.player1_bond, pot_split + game.player2_bond)
+        };
+        
+        game.stage = GameStage::Finished;
+        
+        // Transfer total amount from game vault to program vault
+        if total_amount > 0 {
+            transfer_pot_to_vault(&ctx, total_amount)?;
+        }
+        
+        // Update stats and balances
+        update_player_stats(&mut ctx.accounts, p1_win, p2_win, stake)?;
+    }
     
     Ok(())
+}
+
+/// Compatibility alias for resolve_hand
+pub fn resolve_game(ctx: Context<ResolveGame>) -> Result<()> {
+    resolve_hand(ctx)
 }
 
 fn transfer_pot_to_vault(ctx: &Context<ResolveGame>, pot_amount: u64) -> Result<()> {
@@ -112,7 +188,7 @@ fn update_player_stats(
 #[derive(Accounts)]
 pub struct ResolveGame<'info> {
     #[account(mut)]
-    pub game_state: Account<'info, GameState>,
+    pub game_state: Box<Account<'info, GameState>>,
     
     #[account(
         mut,
@@ -151,10 +227,13 @@ pub struct ResolveGame<'info> {
     #[account(mut)]
     pub program_vault: Account<'info, TokenAccount>,
     
+    pub player: Signer<'info>,
+    
     pub token_program: Program<'info, Token>,
 }
 
 /// Claim timeout win if opponent doesn't act
+/// Winner receives the pot + their bond back + opponent's bond (penalty)
 pub fn claim_timeout(ctx: Context<ClaimTimeout>) -> Result<()> {
     let game = &mut ctx.accounts.game_state;
     let clock = Clock::get()?;
@@ -167,12 +246,38 @@ pub fn claim_timeout(ctx: Context<ClaimTimeout>) -> Result<()> {
         PokerError::TimeoutNotReached
     );
     
-    // Verify it's not the claiming player's turn
-    require!(!game.is_player_turn(&player), PokerError::NotYourTurn);
+    // Verify it's not the claiming player's turn (or their reveal deadline)
+    // In reveal stages, check against reveal_deadline
+    let is_timeout = match game.stage {
+        GameStage::AwaitingPlayer2FlopShare |
+        GameStage::AwaitingPlayer2TurnShare |
+        GameStage::AwaitingPlayer2RiverShare |
+        GameStage::AwaitingPlayer2ShowdownReveal => {
+            clock.unix_timestamp > game.reveal_deadline
+        }
+        _ => {
+            !game.is_player_turn(&player) && elapsed > game.action_timeout
+        }
+    };
+    
+    require!(is_timeout, PokerError::TimeoutNotReached);
     
     // Award win to the player who didn't timeout
     game.winner = Some(player);
-    game.stage = GameStage::Completed;
+    
+    // Winner gets pot + their bond + opponent's bond (as penalty)
+    let is_player1 = player == game.player1;
+    let winner_amount = game.pot + game.player1_bond + game.player2_bond;
+    
+    if is_player1 {
+        ctx.accounts.player1_balance.balance = ctx.accounts.player1_balance.balance
+            .saturating_add(winner_amount);
+    } else {
+        ctx.accounts.player2_balance.balance = ctx.accounts.player2_balance.balance
+            .saturating_add(winner_amount);
+    }
+    
+    game.stage = GameStage::Finished;
     
     Ok(())
 }
@@ -180,7 +285,21 @@ pub fn claim_timeout(ctx: Context<ClaimTimeout>) -> Result<()> {
 #[derive(Accounts)]
 pub struct ClaimTimeout<'info> {
     #[account(mut)]
-    pub game_state: Account<'info, GameState>,
+    pub game_state: Box<Account<'info, GameState>>,
+    
+    #[account(
+        mut,
+        seeds = [b"balance", game_state.player1.as_ref()],
+        bump = player1_balance.bump
+    )]
+    pub player1_balance: Account<'info, PlayerBalance>,
+    
+    #[account(
+        mut,
+        seeds = [b"balance", game_state.player2.as_ref()],
+        bump = player2_balance.bump
+    )]
+    pub player2_balance: Account<'info, PlayerBalance>,
     
     pub player: Signer<'info>,
 }

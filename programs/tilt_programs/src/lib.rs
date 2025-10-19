@@ -34,35 +34,32 @@ pub mod tilt_programs {
         instructions::withdraw_funds(ctx, amount)
     }
 
-    /// Create a new game with player 1's commitment
+    /// Create a new game with player 1's ephemeral public key
     pub fn create_game(
         ctx: Context<CreateGame>,
         stake_amount: u64,
-        commitment: [u8; 32],
+        player1_ephemeral_pubkey: EphemeralPubkey,
         game_id: u64,
     ) -> Result<()> {
-        instructions::create_game(ctx, stake_amount, commitment, game_id)
+        instructions::create_game(ctx, stake_amount, player1_ephemeral_pubkey, game_id)
     }
 
-    /// Player 2 joins the game with their commitment
+    /// Player 2 joins the game with their ephemeral public key and 9 doubly-encrypted cards
     pub fn join_game(
         ctx: Context<JoinGame>,
-        commitment: [u8; 32],
+        player2_ephemeral_pubkey: EphemeralPubkey,
+        encrypted_cards: [EncryptedCard; 9],
     ) -> Result<()> {
-        instructions::join_game(ctx, commitment)
+        instructions::join_game(ctx, player2_ephemeral_pubkey, encrypted_cards)
     }
 
-    /// Both players reveal their secrets to generate the deck
-    pub fn reveal_secret(
-        ctx: Context<RevealSecret>,
-        secret: [u8; 32],
+    /// Reveal community cards (two-step process for flop, turn, river)
+    pub fn reveal_community_cards(
+        ctx: Context<RevealCommunityCards>,
+        decryption_shares: Vec<EncryptedCard>,
+        plaintext_cards: Option<Vec<u8>>,
     ) -> Result<()> {
-        instructions::reveal_secret(ctx, secret)
-    }
-
-    /// Deal initial cards (pocket cards) after both secrets revealed
-    pub fn deal_initial(ctx: Context<DealInitial>) -> Result<()> {
-        instructions::deal_initial(ctx)
+        instructions::reveal_community_cards(ctx, decryption_shares, plaintext_cards)
     }
 
     /// Player action: fold, check, call, or raise
@@ -79,7 +76,12 @@ pub mod tilt_programs {
         instructions::advance_street(ctx)
     }
 
-    /// Resolve the game and distribute winnings
+    /// Resolve hand at showdown (two-step process with card verification)
+    pub fn resolve_hand(ctx: Context<ResolveGame>) -> Result<()> {
+        instructions::resolve_hand(ctx)
+    }
+
+    /// Resolve the game and distribute winnings (alias for resolve_hand)
     pub fn resolve_game(ctx: Context<ResolveGame>) -> Result<()> {
         instructions::resolve_game(ctx)
     }

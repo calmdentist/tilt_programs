@@ -2,35 +2,6 @@ use anchor_lang::prelude::*;
 use crate::state::*;
 use crate::errors::*;
 
-/// Deal initial cards (pocket cards)
-pub fn deal_initial(ctx: Context<DealInitial>) -> Result<()> {
-    let game = &mut ctx.accounts.game_state;
-    
-    require!(
-        game.stage == GameStage::PreFlop,
-        PokerError::InvalidGameStage
-    );
-    
-    require!(
-        game.player1_hand == [0u8; 2],
-        PokerError::CardsAlreadyDealt
-    );
-    
-    // Deal 2 cards to each player
-    game.player1_hand[0] = game.deal_card();
-    game.player2_hand[0] = game.deal_card();
-    game.player1_hand[1] = game.deal_card();
-    game.player2_hand[1] = game.deal_card();
-    
-    Ok(())
-}
-
-#[derive(Accounts)]
-pub struct DealInitial<'info> {
-    #[account(mut)]
-    pub game_state: Account<'info, GameState>,
-}
-
 /// Handle player actions (fold, check, call, raise)
 pub fn player_action(
     ctx: Context<PlayerAction>,
@@ -45,7 +16,8 @@ pub fn player_action(
     require!(
         matches!(
             game.stage,
-            GameStage::PreFlop | GameStage::Flop | GameStage::Turn | GameStage::River
+            GameStage::PreFlopBetting | GameStage::PostFlopBetting | 
+            GameStage::PostTurnBetting | GameStage::PostRiverBetting
         ),
         PokerError::InvalidGameStage
     );
@@ -94,7 +66,7 @@ pub fn player_action(
             } else {
                 game.player2_folded = true;
             }
-            game.stage = GameStage::Completed;
+            game.stage = GameStage::Finished;
             game.winner = Some(game.get_other_player(&player));
         }
         
@@ -215,12 +187,13 @@ pub fn player_action(
 #[derive(Accounts)]
 pub struct PlayerAction<'info> {
     #[account(mut)]
-    pub game_state: Account<'info, GameState>,
+    pub game_state: Box<Account<'info, GameState>>,
     
     pub player: Signer<'info>,
 }
 
-/// Advance to next street (flop, turn, river) or showdown
+/// Advance to next street or showdown after betting round completes
+/// This transitions to card reveal stages
 pub fn advance_street(ctx: Context<AdvanceStreet>) -> Result<()> {
     let game = &mut ctx.accounts.game_state;
     
@@ -232,44 +205,36 @@ pub fn advance_street(ctx: Context<AdvanceStreet>) -> Result<()> {
     
     // If someone folded, game is over
     if game.player1_folded || game.player2_folded {
-        game.stage = GameStage::Completed;
+        game.stage = GameStage::Finished;
         return Ok(());
     }
     
-    // Reset current bets for new street
-    game.player1_current_bet = 0;
-    game.player2_current_bet = 0;
+    let clock = Clock::get()?;
     
-    // In heads-up, big blind acts first post-flop
-    game.current_player = if game.dealer_button == 1 { 2 } else { 1 };
-    
+    // Transition based on current stage
     match game.stage {
-        GameStage::PreFlop => {
-            // Deal flop (3 cards)
-            game.community_cards[0] = game.deal_card();
-            game.community_cards[1] = game.deal_card();
-            game.community_cards[2] = game.deal_card();
-            game.community_cards_dealt = 3;
-            game.stage = GameStage::Flop;
+        GameStage::PreFlopBetting => {
+            // Move to awaiting flop reveal
+            game.stage = GameStage::AwaitingFlopReveal;
+            game.last_action_at = clock.unix_timestamp;
         }
         
-        GameStage::Flop => {
-            // Deal turn (1 card)
-            game.community_cards[3] = game.deal_card();
-            game.community_cards_dealt = 4;
-            game.stage = GameStage::Turn;
+        GameStage::PostFlopBetting => {
+            // Move to awaiting turn reveal
+            game.stage = GameStage::AwaitingTurnReveal;
+            game.last_action_at = clock.unix_timestamp;
         }
         
-        GameStage::Turn => {
-            // Deal river (1 card)
-            game.community_cards[4] = game.deal_card();
-            game.community_cards_dealt = 5;
-            game.stage = GameStage::River;
+        GameStage::PostTurnBetting => {
+            // Move to awaiting river reveal
+            game.stage = GameStage::AwaitingRiverReveal;
+            game.last_action_at = clock.unix_timestamp;
         }
         
-        GameStage::River => {
-            // Go to showdown
+        GameStage::PostRiverBetting => {
+            // Move to showdown - players will reveal their pocket cards
             game.stage = GameStage::Showdown;
+            game.last_action_at = clock.unix_timestamp;
         }
         
         _ => {
@@ -283,6 +248,6 @@ pub fn advance_street(ctx: Context<AdvanceStreet>) -> Result<()> {
 #[derive(Accounts)]
 pub struct AdvanceStreet<'info> {
     #[account(mut)]
-    pub game_state: Account<'info, GameState>,
+    pub game_state: Box<Account<'info, GameState>>,
 }
 
