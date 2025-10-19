@@ -16,9 +16,10 @@ Initializes a new game state account. Called only by Player 1.
     -   `system_program`: Required for account creation.
 -   **Args**:
     -   `player1_ephemeral_pubkey`: Player 1's public key for the commutative cipher.
+    -   `deck_merkle_root`: The Merkle root of the 52-card, singly-encrypted, shuffled deck.
 -   **Logic**:
     1.  Creates and initializes the `GameState` account.
-    2.  Sets `player1` and their ephemeral public key.
+    2.  Sets `player1`, their ephemeral public key, and the `deck_merkle_root`.
     3.  Transfers the buy-in from Player 1 to the pot/escrow.
     4.  Sets the game status to `WaitingForPlayer2`.
 
@@ -30,13 +31,19 @@ Called by Player 2 to join an existing game.
 -   **Args**:
     -   `player2_ephemeral_pubkey`: Player 2's public key.
     -   `encrypted_cards`: An array of the 9 doubly-encrypted cards needed for the hand.
+    -   `singly_encrypted_cards`: The array of the 9 original singly-encrypted cards from Player 1's deck.
+    -   `card_merkle_proofs`: An array of 9 Merkle proofs, one for each of the `singly_encrypted_cards`.
 -   **Logic**:
     1.  Validates that the game is waiting for a player.
-    2.  Sets `player2` and their ephemeral public key.
-    3.  Stores the 9 doubly-encrypted cards.
-    4.  Transfers the buy-in from Player 2.
-    5.  Posts blinds automatically.
-    6.  Sets the game status to `PreFlopBetting` and sets the turn to the first player to act.
+    2.  **Verification**: For each of the 9 cards, the program performs two checks:
+        a.  It hashes the provided `singly_encrypted_card` and uses the corresponding `merkle_proof` to verify it against the `deck_merkle_root`. This proves the card came from Player 1's deck.
+        b.  It re-encrypts the `singly_encrypted_card` with `player2_ephemeral_pubkey` and confirms it matches the provided `doubly_encrypted_card`. This proves Player 2 encrypted correctly.
+        *(Note: This verification step is computationally intensive and will require a high CU limit.)*
+    3.  Sets `player2` and their ephemeral public key.
+    4.  Stores the now-verified 9 doubly-encrypted cards.
+    5.  Transfers the buy-in from Player 2.
+    6.  Posts blinds automatically.
+    7.  Sets the game status to `PreFlopBetting` and sets the turn to the first player to act.
 
 ### `player_action()`
 The primary instruction for all betting actions.
@@ -91,6 +98,50 @@ A catch-all instruction to handle unresponsive players.
     2.  If the deadline has passed, the signer is declared the winner.
     3.  The pot and the opponent's bond are transferred to the signer.
     4.  The game status is set to `Finished`.
+
+## 4. Game State
+
+The on-chain `GameState` account stores all the necessary information to represent a single hand of poker. It is designed to be minimal while ensuring the game is secure and verifiable. It transitions from the old model (seen in `game.rs`) by removing the plaintext deck and hands, and adding state for the cryptographic protocol.
+
+*(Note: The `[u8; 32]` type assumes the use of a 256-bit prime for the commutative cipher, resulting in 32-byte keys and encrypted values.)*
+
+### Core Game State & Players
+-   `game_id`: A unique identifier for the game.
+-   `player1`: The public key of the first player.
+-   `player2`: The public key of the second player.
+-   `stage`: The current phase of the game (e.g., `PreFlopBetting`, `AwaitingFlopReveal`).
+-   `current_player`: Tracks whose turn it is to act (1 or 2).
+-   `dealer_button`: Tracks the dealer position.
+-   `winner`: `Option<Pubkey>` storing the winner of the hand.
+
+### Cryptographic State
+*(This section replaces the `player_commitment` and plaintext `deck` fields from the old model.)*
+-   `player1_ephemeral_pubkey`: `[u8; 32]` - Player 1's public key for this hand's encryption.
+-   `player2_ephemeral_pubkey`: `[u8; 32]` - Player 2's public key for this hand's encryption.
+-   `deck_merkle_root`: `[u8; 32]` - The Merkle root of Player 1's singly-encrypted 52-card deck, used to verify Player 2's card selection.
+-   `doubly_encrypted_cards`: `[[u8; 32]; 9]` - The 9 cards for the hand, doubly-encrypted with both players' keys. A canonical mapping is used:
+    -   Indices 0-1: Player 1's pocket cards.
+    -   Indices 2-3: Player 2's pocket cards.
+    -   Indices 4-6: The flop.
+    -   Index 7: The turn.
+    -   Index 8: The river.
+-   `player1_decryption_shares`: `[[u8; 32]; 3]` - A temporary holding spot for Player 1's decryption shares during the two-step community card reveal. Sized for the flop, which is the largest reveal.
+-   `revealed_community_cards`: `[u8; 5]` - Stores the plaintext of community cards as they are successfully revealed and verified. Unrevealed cards are marked with a sentinel value.
+-   `player1_revealed_hand`: `[u8; 2]` - Stores Player 1's plaintext hand, only populated and verified during the showdown.
+-   `player2_revealed_hand`: `[u8; 2]` - Stores Player 2's plaintext hand, only populated and verified during the showdown.
+
+### Betting & Financial State
+-   `token_vault` & `vault_bump`: The pot/escrow account for the game's funds.
+-   `stake_amount`: The buy-in amount for the game.
+-   `pot`: The current total amount wagered.
+-   `player1_stack` & `player2_stack`: Each player's remaining chips.
+-   `player1_current_bet` & `player2_current_bet`: The amount each player has bet in the current round.
+-   `player1_folded`, `player2_folded`, `player1_all_in`, `player2_all_in`: Boolean flags for player status.
+
+### Timing & Liveness
+-   `created_at`: Timestamp of game creation.
+-   `last_action_at`: Timestamp of the last player action, used for timeouts.
+-   `action_timeout`: The duration in seconds a player has to take their action.
 
 ## 3. Game Life-cycle
 
