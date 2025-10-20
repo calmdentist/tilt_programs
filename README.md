@@ -32,275 +32,85 @@ This will:
 
 ## 🎯 Architecture Overview
 
-### Game Flow
+zkPoker implements a trustless mental poker protocol using **Pohlig-Hellman commutative encryption**. The protocol ensures card privacy and fairness without requiring a trusted dealer.
 
-1. **Game Creation** - Player 1 creates a game with:
-   - Stake amount
-   - Commitment hash (keccak256 of secret)
+### The Protocol
 
-2. **Player Join** - Player 2 joins with:
-   - Their own commitment hash
+#### Phase 1: Game Setup & Deck Shuffling
 
-3. **Secret Reveal** - Both players reveal their secrets:
-   - Secrets are verified against commitments
-   - Combined seed generates shuffled deck
-   - Blinds are automatically posted
+1. **Key Generation**: Both players generate ephemeral keypairs for Pohlig-Hellman encryption
+2. **Player 1 Setup**:
+   - Shuffles a standard 52-card deck
+   - Encrypts each card with their private key
+   - Computes a **Merkle root** of the encrypted deck
+   - Creates game on-chain with their public key and Merkle root
+   - Passes encrypted deck to Player 2 off-chain
 
-4. **Deal Cards** - Initial pocket cards dealt
+3. **Player 2 Join**:
+   - Re-shuffles Player 1's encrypted deck
+   - Applies second layer of encryption with their key
+   - Selects 9 cards needed (4 pocket + 5 community)
+   - Generates **Merkle proofs** for each card
+   - Submits doubly-encrypted cards + proofs on-chain
+   - Program verifies proofs against stored Merkle root
 
-5. **Betting Rounds**:
-   - **Pre-flop** - Betting with hole cards only
-   - **Flop** - 3 community cards dealt, betting round
-   - **Turn** - 4th community card dealt, betting round
-   - **River** - 5th community card dealt, betting round
+**Result**: 9 doubly-encrypted cards committed on-chain, provably from the original deck. Neither player knows plaintext values or can manipulate deck composition.
 
-6. **Showdown** - Best 5-card hands evaluated, winner determined
+#### Phase 2: Gameplay
 
-7. **Resolution** - Pot distributed, player stats updated
+**Pocket Cards (Off-Chain)**:
+- Player 2 sends Player 1's cards (decrypted once) off-chain
+- Player 1's client **must verify** by re-encrypting and checking against on-chain values
+- If verification fails, Player 1 can claim timeout
+- Process mirrors for Player 2's cards
 
-## 🔐 Provable Fairness
+**Community Cards (On-Chain)**:
+- Two-step progressive reveal for Flop, Turn, River:
+  1. Player 1 submits decryption share
+  2. Player 2 submits decryption share + plaintext
+- Program **immediately verifies** by re-encrypting plaintext and comparing to stored encrypted version
+- Distributes compute load across transactions
+- Timeouts enforce liveness
 
-The protocol uses a **commit-reveal scheme** to ensure neither player can manipulate the deck:
+**Betting**:
+- Standard on-chain actions (Fold, Check, Call, Raise)
+- Funds transferred to shared pot account
 
-1. Both players commit to a random 32-byte secret (by submitting its hash)
-2. After both commit, they reveal their secrets
-3. Secrets are XORed and hashed to create the deck seed
-4. Deck is shuffled deterministically using Fisher-Yates algorithm
+#### Phase 3: Showdown & Verification
 
-This ensures:
-- Neither player knows the deck order before committing
-- The deck is verifiable by combining both revealed secrets
-- No third party or oracle is needed
+1. **Card Reveal**: Players reveal plaintext pocket cards
+2. **On-Chain Verification**: Program re-encrypts revealed cards with both keys and verifies against stored doubly-encrypted values
+3. **Winner Determination**: Program evaluates verified hands using standard poker rankings and distributes pot
 
-## 📝 Program Instructions
+### Core Instructions
 
-### `initialize_player`
-Creates a persistent player account to track stats across games.
+- **`create_game`** - P1 initializes game with public key and Merkle root
+- **`join_game`** - P2 submits encrypted cards and Merkle proofs
+- **`reveal_community_cards`** - Two-step card reveal with verification
+- **`player_action`** - Betting actions (Fold, Check, Call, Raise)
+- **`advance_street`** - Progress to next betting round
+- **`resolve_hand`** - Showdown verification and winner determination
+- **`claim_timeout`** - Win by timeout if opponent doesn't act
 
-**Accounts:**
-- `player_account` - PDA derived from player's pubkey
-- `authority` - Signer and payer
+### Game State Progression
 
-### `create_game`
-Player 1 creates a new game.
+1. `WaitingForPlayer2` → P1 creates game
+2. `PreFlopBetting` → P2 joins, blinds posted
+3. `AwaitingFlopReveal` → Betting complete
+4. `PostFlopBetting` → Flop revealed and verified
+5. `AwaitingTurnReveal` → Betting complete
+6. `PostTurnBetting` → Turn revealed and verified
+7. `AwaitingRiverReveal` → Betting complete
+8. `PostRiverBetting` → River revealed and verified
+9. `Showdown` → Final betting complete
+10. `Finished` → Winner determined, pot distributed
 
-**Parameters:**
-- `stake_amount: u64` - Amount staked by each player
-- `commitment: [u8; 32]` - Keccak256 hash of player's secret
+### Security Features
 
-**Accounts:**
-- `game_state` - PDA for game data
-- `player1` - Signer and payer
+- **Provable Fairness**: Merkle proofs ensure deck integrity
+- **Progressive Verification**: Cards verified immediately upon reveal (~400k CUs per verification)
+- **Timeout Protection**: Player bonds forfeit if actions not taken in time
+- **No Trusted Dealer**: Fully trustless cryptographic protocol
+- **Client-Side Validation**: Critical verifications happen off-chain with on-chain enforcement
 
-### `join_game`
-Player 2 joins an existing game.
-
-**Parameters:**
-- `commitment: [u8; 32]` - Keccak256 hash of player's secret
-
-**Accounts:**
-- `game_state` - Game to join
-- `player2` - Signer
-
-### `reveal_secret`
-Players reveal their secrets to generate the deck.
-
-**Parameters:**
-- `secret: [u8; 32]` - Original secret that was hashed
-
-**Accounts:**
-- `game_state` - Game state
-- `player` - Signer (either player)
-
-### `deal_initial`
-Deals 2 pocket cards to each player (can be called by anyone).
-
-**Accounts:**
-- `game_state` - Game state
-
-### `player_action`
-Player performs an action during betting round.
-
-**Parameters:**
-- `action: PlayerActionType` - Fold, Check, Call, Raise, or AllIn
-- `raise_amount: Option<u64>` - Amount to raise (required for Raise)
-
-**Accounts:**
-- `game_state` - Game state
-- `player` - Signer (must be current player)
-
-### `advance_street`
-Advances to next street after betting round completes (can be called by anyone).
-
-**Accounts:**
-- `game_state` - Game state
-
-### `resolve_game`
-Evaluates hands and determines winner at showdown.
-
-**Accounts:**
-- `game_state` - Game state
-- `player1_account` - Player 1's stats account
-- `player2_account` - Player 2's stats account
-
-### `claim_timeout`
-Claim win if opponent doesn't act within time limit.
-
-**Accounts:**
-- `game_state` - Game state
-- `player` - Signer (non-timeout player)
-
-## 🃏 Card Representation
-
-Cards are represented as `u8` values (0-51):
-- **0-12**: Clubs (2-A)
-- **13-25**: Diamonds (2-A)
-- **26-38**: Hearts (2-A)
-- **39-51**: Spades (2-A)
-
-Within each suit:
-- 0 = 2, 1 = 3, ..., 8 = 10, 9 = J, 10 = Q, 11 = K, 12 = A
-
-## 🎲 Hand Rankings
-
-Standard poker hand rankings (highest to lowest):
-1. Royal Flush
-2. Straight Flush
-3. Four of a Kind
-4. Full House
-5. Flush
-6. Straight
-7. Three of a Kind
-8. Two Pair
-9. One Pair
-10. High Card
-
-## 🔧 Client Usage Example
-
-```typescript
-import * as anchor from "@coral-xyz/anchor";
-import { keccak_256 } from "@noble/hashes/sha3";
-
-// Generate secret and commitment
-const secret = new Uint8Array(32);
-crypto.getRandomValues(secret);
-const commitment = keccak_256(secret);
-
-// Create game
-await program.methods
-  .createGame(
-    new anchor.BN(1000000), // 1 SOL stake
-    Array.from(commitment)
-  )
-  .accounts({
-    gameState: gamePda,
-    player1: player1.publicKey,
-    systemProgram: SystemProgram.programId,
-  })
-  .signers([player1])
-  .rpc();
-
-// Join game (as player 2)
-await program.methods
-  .joinGame(Array.from(commitment2))
-  .accounts({
-    gameState: gamePda,
-    player2: player2.publicKey,
-  })
-  .signers([player2])
-  .rpc();
-
-// Reveal secrets
-await program.methods
-  .revealSecret(Array.from(secret))
-  .accounts({
-    gameState: gamePda,
-    player: player1.publicKey,
-  })
-  .signers([player1])
-  .rpc();
-
-// Deal cards
-await program.methods
-  .dealInitial()
-  .accounts({
-    gameState: gamePda,
-  })
-  .rpc();
-
-// Player action
-await program.methods
-  .playerAction(
-    { raise: {} }, // Action type
-    new anchor.BN(2000000) // Raise amount
-  )
-  .accounts({
-    gameState: gamePda,
-    player: currentPlayer.publicKey,
-  })
-  .signers([currentPlayer])
-  .rpc();
-
-// Advance to next street
-await program.methods
-  .advanceStreet()
-  .accounts({
-    gameState: gamePda,
-  })
-  .rpc();
-
-// Resolve game at showdown
-await program.methods
-  .resolveGame()
-  .accounts({
-    gameState: gamePda,
-    player1Account: player1AccountPda,
-    player2Account: player2AccountPda,
-  })
-  .rpc();
-```
-
-## 🏗️ Development
-
-### Build
-```bash
-anchor build
-```
-
-### Test
-```bash
-anchor test
-```
-
-### Deploy
-```bash
-anchor deploy
-```
-
-## 🔒 Security Considerations
-
-1. **Randomness**: Uses commit-reveal scheme - both players contribute entropy
-2. **Timeouts**: 60-second action timeout prevents griefing
-3. **Atomicity**: All game state changes are atomic on-chain
-4. **Verification**: Entire game state is on-chain and verifiable
-5. **No Oracle**: No external randomness source needed
-
-## 🚀 Future Enhancements
-
-- [ ] Multi-table tournaments
-- [ ] Rake/fee mechanism
-- [ ] Player reputation system
-- [ ] Hand history export
-- [ ] Side pots for all-in scenarios
-- [ ] Table chat/emotes
-- [ ] Automated matchmaking contract
-- [ ] Progressive jackpots
-
-## 📄 License
-
-MIT
-
-## 🤝 Contributing
-
-Contributions welcome! Please open an issue or PR.
-
+For complete details, see [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`MANIFESTO.md`](MANIFESTO.md).
