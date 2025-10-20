@@ -20,5 +20,4 @@ default = []
 anchor-lang = { version = "0.28.0", features = ["init-if-needed"] }
 anchor-spl = "0.28.0"
 solana-program = "1.16"
-num-bigint = "0.4"
-num-traits = "0.2"
+crypto-bigint = { version = "0.5", default-features = false, features = ["serde"] }

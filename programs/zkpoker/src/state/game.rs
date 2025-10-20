@@ -1,22 +1,71 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::keccak;
 use super::types::*;
-use num_bigint::BigUint;
+use crypto_bigint::{U256, U512, Encoding, NonZero};
 
 // 256-bit safe prime for Pohlig-Hellman cipher
 // This is 2^256 - 189 in big-endian byte format
 // Chosen for: (1) Large enough for security, (2) Small enough for on-chain compute
-const PRIME_BYTES: [u8; 33] = [
+const PRIME_BYTES: [u8; 32] = [
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0x43
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x43,
 ];
 
-/// Helper function to get the prime modulus as BigUint
-fn get_prime() -> BigUint {
-    BigUint::from_bytes_be(&PRIME_BYTES)
+/// Helper function to get the prime modulus as U256
+fn get_prime() -> U256 {
+    U256::from_be_bytes(PRIME_BYTES)
+}
+
+/// Helper function to perform modular exponentiation: base^exp mod modulus
+/// Uses square-and-multiply algorithm with crypto-bigint
+fn modpow(base: &U256, exp: &U256, modulus: &U256) -> U256 {
+    let modulus_nz = NonZero::new(*modulus).unwrap();
+    let modulus_wide = U512::from(modulus);
+    let modulus_wide_nz = NonZero::new(modulus_wide).unwrap();
+    
+    let mut result = U256::ONE;
+    let mut base_pow = *base % modulus_nz;
+    
+    // Process each bit of the exponent (LSB to MSB)
+    for i in 0..256 {
+        let word_index = i / 64;
+        let bit_offset = i % 64;
+        let bit_is_set = (exp.as_words()[word_index] >> bit_offset) & 1 == 1;
+        
+        if bit_is_set {
+            // result = (result * base_pow) mod modulus
+            // mul_wide returns (high, low) as (U256, U256)
+            let (high, low) = result.mul_wide(&base_pow);
+            // Combine into U512
+            let product_wide = concat_u256_to_u512(&low, &high);
+            result = (product_wide % modulus_wide_nz).resize();
+        }
+        
+        // base_pow = (base_pow * base_pow) mod modulus
+        let (high, low) = base_pow.mul_wide(&base_pow);
+        let square_wide = concat_u256_to_u512(&low, &high);
+        base_pow = (square_wide % modulus_wide_nz).resize();
+    }
+    
+    result
+}
+
+/// Helper to concatenate two U256 values into a U512 (low || high)
+fn concat_u256_to_u512(low: &U256, high: &U256) -> U512 {
+    let low_words = low.as_words();
+    let high_words = high.as_words();
+    U512::from_words([
+        low_words[0],
+        low_words[1],
+        low_words[2],
+        low_words[3],
+        high_words[0],
+        high_words[1],
+        high_words[2],
+        high_words[3],
+    ])
 }
 
 /// Represents a single poker hand/game between two players
@@ -174,32 +223,33 @@ impl GameState {
         // Get the prime modulus
         let prime = get_prime();
         
-        // Convert plaintext card to BigUint (cards are 0-51)
+        // Convert plaintext card to U256 (cards are 0-51)
         // Map card to a value in the valid range (2 to prime-1)
         // We add 2 to ensure we're never 0 or 1
-        let plaintext = BigUint::from(plaintext_card as u64 + 2);
+        let plaintext = U256::from_u64(plaintext_card as u64 + 2);
         
-        // Convert player keys from bytes to BigUint (big-endian)
-        let player1_key = BigUint::from_bytes_be(&self.player1_ephemeral_pubkey.data);
-        let player2_key = BigUint::from_bytes_be(&self.player2_ephemeral_pubkey.data);
+        // Convert player keys from bytes to U256 (big-endian)
+        let player1_key = U256::from_be_bytes(self.player1_ephemeral_pubkey.data);
+        let player2_key = U256::from_be_bytes(self.player2_ephemeral_pubkey.data);
         
         // Validate that keys are in valid range (2 to prime-1)
-        if player1_key < BigUint::from(2u32) || player1_key >= prime {
+        let two = U256::from_u64(2);
+        if player1_key < two || player1_key >= prime {
             return false;
         }
-        if player2_key < BigUint::from(2u32) || player2_key >= prime {
+        if player2_key < two || player2_key >= prime {
             return false;
         }
         
         // First encryption: plaintext^player1_key mod prime
-        let encrypted_once = plaintext.modpow(&player1_key, &prime);
+        let encrypted_once = modpow(&plaintext, &player1_key, &prime);
         
         // Second encryption: encrypted_once^player2_key mod prime
         // This is the commutative property: (m^a)^b = (m^b)^a mod p
-        let encrypted_twice = encrypted_once.modpow(&player2_key, &prime);
+        let encrypted_twice = modpow(&encrypted_once, &player2_key, &prime);
         
-        // Convert the stored encrypted card to BigUint for comparison
-        let expected_encrypted = BigUint::from_bytes_be(&encrypted_card.data);
+        // Convert the stored encrypted card to U256 for comparison
+        let expected_encrypted = U256::from_be_bytes(encrypted_card.data);
         
         // Verify that our computed encryption matches the stored value
         encrypted_twice == expected_encrypted
@@ -284,23 +334,14 @@ impl GameState {
         let prime = get_prime();
         
         // Map card value (0-51) to valid range (2 to prime-1)
-        let plaintext = BigUint::from(card as u64 + 2);
-        let key = BigUint::from_bytes_be(&public_key.data);
+        let plaintext = U256::from_u64(card as u64 + 2);
+        let key = U256::from_be_bytes(public_key.data);
         
         // Perform modular exponentiation
-        let encrypted = plaintext.modpow(&key, &prime);
+        let encrypted = modpow(&plaintext, &key, &prime);
         
         // Convert result to 32-byte array (big-endian)
-        let encrypted_bytes = encrypted.to_bytes_be();
-        let mut result = [0u8; 32];
-        
-        // Pad left with zeros if needed, or take the last 32 bytes
-        if encrypted_bytes.len() <= 32 {
-            let offset = 32 - encrypted_bytes.len();
-            result[offset..].copy_from_slice(&encrypted_bytes);
-        } else {
-            result.copy_from_slice(&encrypted_bytes[encrypted_bytes.len() - 32..]);
-        }
+        let result = encrypted.to_be_bytes();
         
         EncryptedCard { data: result }
     }
@@ -311,24 +352,15 @@ impl GameState {
     pub fn encrypt_card_bytes(encrypted_bytes: &[u8; 32], public_key: &EphemeralPubkey) -> EncryptedCard {
         let prime = get_prime();
         
-        // Convert encrypted bytes to BigUint
-        let encrypted_value = BigUint::from_bytes_be(encrypted_bytes);
-        let key = BigUint::from_bytes_be(&public_key.data);
+        // Convert encrypted bytes to U256
+        let encrypted_value = U256::from_be_bytes(*encrypted_bytes);
+        let key = U256::from_be_bytes(public_key.data);
         
         // Perform modular exponentiation on the already-encrypted value
-        let double_encrypted = encrypted_value.modpow(&key, &prime);
+        let double_encrypted = modpow(&encrypted_value, &key, &prime);
         
         // Convert result to 32-byte array (big-endian)
-        let result_bytes = double_encrypted.to_bytes_be();
-        let mut result = [0u8; 32];
-        
-        // Pad left with zeros if needed, or take the last 32 bytes
-        if result_bytes.len() <= 32 {
-            let offset = 32 - result_bytes.len();
-            result[offset..].copy_from_slice(&result_bytes);
-        } else {
-            result.copy_from_slice(&result_bytes[result_bytes.len() - 32..]);
-        }
+        let result = double_encrypted.to_be_bytes();
         
         EncryptedCard { data: result }
     }
@@ -338,22 +370,22 @@ impl GameState {
     /// Note: This requires computing the private key inverse, which is expensive
     pub fn decrypt_card(encrypted: &EncryptedCard, private_key: &[u8; 32]) -> Option<u8> {
         let prime = get_prime();
-        let encrypted_val = BigUint::from_bytes_be(&encrypted.data);
-        let key = BigUint::from_bytes_be(private_key);
+        let encrypted_val = U256::from_be_bytes(encrypted.data);
+        let key = U256::from_be_bytes(*private_key);
         
-        // Compute modular inverse of the key: key^-1 mod (prime-1)
-        // Using Fermat's little theorem: key^-1 = key^(prime-2) mod prime
-        let prime_minus_one = &prime - BigUint::from(1u32);
-        let inv_key = key.modpow(&(&prime_minus_one - BigUint::from(1u32)), &prime_minus_one);
+        // Compute modular inverse of the key using Fermat's little theorem
+        // For prime p: key^-1 = key^(p-2) mod p
+        let prime_minus_two = prime.wrapping_sub(&U256::from_u64(2));
+        let inv_key = modpow(&key, &prime_minus_two, &prime);
         
         // Decrypt: plaintext = encrypted^(key^-1) mod prime
-        let plaintext = encrypted_val.modpow(&inv_key, &prime);
+        let plaintext = modpow(&encrypted_val, &inv_key, &prime);
         
         // Convert back to card value (subtract 2 to get 0-51)
-        if let Some(card_plus_2) = plaintext.to_u64_digits().first() {
-            if *card_plus_2 >= 2 && *card_plus_2 <= 53 {
-                return Some((*card_plus_2 - 2) as u8);
-            }
+        // Extract the low 64 bits
+        let card_plus_2 = plaintext.as_words()[0];
+        if card_plus_2 >= 2 && card_plus_2 <= 53 {
+            return Some((card_plus_2 - 2) as u8);
         }
         
         None
