@@ -1,11 +1,11 @@
-# Tilt - Permissionless, provably fair onchain poker on Solana
+# zkPoker - permissionless, provably fair onchain poker on Solana
 
-A fully on-chain, permissionless, provably fair poker protocol on Solana featuring:
+Featuring:
 - **2-player heads-up poker** will expand to multiplayer in the future
-- **Commutative Encryption** for provable fairness
+- **Commutative Encryption** Pohlig-Hellman for provable fairness
 - **Complete poker hand evaluation** with standard Texas Hold'em rules
 - **Time-limited actions** with timeout protection
-- **Persistent player statistics**
+- **Bespoke architecture** only 1 txn to create/join game and each betting round
 
 ## 🚀 Quick Setup
 
