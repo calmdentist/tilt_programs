@@ -1,4 +1,4 @@
-Optimistic zkpoker game-flow
+###Optimistic zkpoker game-flow
 
 ##Game creation
 1. Player 1 (p_1) creates game and submits ephemeral pubkey to contract (pubkey1), shuffles and encrypts deck offchain.
