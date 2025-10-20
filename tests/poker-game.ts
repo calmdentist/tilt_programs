@@ -1,7 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { TiltPrograms } from "../target/types/tilt_programs";
+import { Zkpoker } from "../target/types/zkpoker";
 import { createPokerClient, PlayerAction, GameFlow } from "../app/poker-client";
 import { expect } from "chai";
 
@@ -9,7 +9,7 @@ describe("Poker Game Flow", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
-  const program = anchor.workspace.TiltPrograms as Program<TiltPrograms>;
+  const program = anchor.workspace.Zkpoker as Program<Zkpoker>;
   const client = createPokerClient(program, provider);
 
   let player1: Keypair;

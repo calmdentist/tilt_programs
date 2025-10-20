@@ -14,13 +14,13 @@ The protocol is divided into three main phases: Setup, Gameplay, and Verificatio
 
 ### Phase 1: Game Setup & Shuffling
 
-The goal of this phase is to create a shuffled, encrypted deck that is committed to the on-chain game state.
+The goal of this phase is to create a shuffled, encrypted deck that is committed to the on-chain game state, preventing any party from manipulating the deck.
 
-1.  **Key Generation**: Both players (Player 1 and Player 2) generate ephemeral keypairs for a **commutative encryption scheme**. The recommended scheme is Pohlig-Hellman (modular exponentiation). Each player submits their public key to the program.
-2.  **Player 1's Shuffle & Encrypt**: Player 1 takes a canonical 52-card deck, shuffles it locally, and encrypts each card with their public key. They pass this singly-encrypted deck to Player 2.
-3.  **Player 2's Shuffle & Encrypt**: Player 2 takes the singly-encrypted deck, shuffles it again locally, and applies a second layer of encryption. From this final deck, Player 2 selects the 9 cards necessary for the hand (2 pocket cards for each player, 5 community cards) and submits only these 9 doubly-encrypted cards to the program's on-chain account. This avoids storing the entire deck on-chain.
+1.  **Key Generation**: Both players (Player 1 and Player 2) generate ephemeral keypairs for a **commutative encryption scheme** (e.g., Pohlig-Hellman).
+2.  **Player 1's Shuffle, Encrypt, and Commit**: Player 1 takes a canonical 52-card deck, shuffles it locally, and encrypts each card with their ephemeral public key. They then compute a **Merkle root** of this 52-card singly-encrypted deck. To create the game, Player 1 submits their public key and this Merkle root to the program. The full encrypted deck is then passed to Player 2 off-chain.
+3.  **Player 2's Shuffle, Encrypt, and Prove**: Player 2 takes the singly-encrypted deck, shuffles it again locally, and applies a second layer of encryption using their own key. From this final deck, Player 2 selects the 9 cards necessary for the hand (2 pocket cards for each player, 5 community cards). To join the game, Player 2 must submit these 9 doubly-encrypted cards to the program, along with **Merkle proofs** for each of the 9 cards, proving they originated from the deck Player 1 committed to. The program verifies these proofs against the stored Merkle root before allowing the game to start.
 
-At the end of this phase, the 9 cards for the hand are committed to the chain, and no single party knows their plaintext values.
+At the end of this phase, the 9 cards for the hand are provably selected from the original shuffled deck and are committed to the chain. No single party knows their plaintext values, and neither party could have manipulated the deck composition.
 
 ### Phase 2: Gameplay
 

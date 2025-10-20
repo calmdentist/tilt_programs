@@ -5,7 +5,7 @@ seeds = false
 skip-lint = false
 
 [programs.localnet]
-tilt_programs = "vpopBXK5VHWiUqSggR6iE1skwbxMnWy4du31265Neky"
+zkpoker = "9q1Yd4NeA172qXwvV5GEwqWrN3dHt1yQ3sNtUB2zavqa"
 
 [registry]
 url = "https://api.apr.dev"

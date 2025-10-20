@@ -28,8 +28,9 @@ import {
   ACCOUNT_SIZE
 } from "@solana/spl-token";
 import { Transaction, SystemProgram } from "@solana/web3.js";
-import { TiltPrograms } from "../target/types/tilt_programs";
+import { Zkpoker } from "../target/types/zkpoker";
 import { createPokerClient, PlayerAction, MentalPokerCrypto, Card } from "./poker-client";
+import * as fs from "fs";
 
 async function main() {
   console.log("\n" + "=".repeat(80));
@@ -42,14 +43,20 @@ async function main() {
   console.log("👥 Setting up players...");
   const player1 = Keypair.generate();
   const player2 = Keypair.generate();
-  const mintAuthority = Keypair.generate();
+  
+  // Load deterministic USDC mint keypair
+  const usdcMintKeypairPath = __dirname + "/../keypairs/usdc-mint-keypair.json";
+  const usdcMintKeypairData = JSON.parse(fs.readFileSync(usdcMintKeypairPath, "utf-8"));
+  const usdcMintKeypair = Keypair.fromSecretKey(new Uint8Array(usdcMintKeypairData));
+  
+  // Mint authority can be player1 (doesn't need to be deterministic)
+  const mintAuthority = player1;
   
   // Airdrop SOL
   console.log("💰 Airdropping SOL...");
   await Promise.all([
     connection.requestAirdrop(player1.publicKey, 3 * LAMPORTS_PER_SOL).then(sig => connection.confirmTransaction(sig, "confirmed")),
     connection.requestAirdrop(player2.publicKey, 3 * LAMPORTS_PER_SOL).then(sig => connection.confirmTransaction(sig, "confirmed")),
-    connection.requestAirdrop(mintAuthority.publicKey, 2 * LAMPORTS_PER_SOL).then(sig => connection.confirmTransaction(sig, "confirmed")),
   ]);
   console.log("   ✓ Funded\n");
   
@@ -57,13 +64,13 @@ async function main() {
   
   // Setup program
   const provider = new AnchorProvider(connection, new Wallet(player1), { commitment: "confirmed" });
-  const idl = require("../target/idl/tilt_programs.json");
+  const idl = require("../target/idl/zkpoker.json");
   const programId = new anchor.web3.PublicKey(idl.address || idl.metadata?.address);
-  const program = new Program(idl, programId, provider) as Program<TiltPrograms>;
+  const program = new Program(idl, programId, provider) as Program<Zkpoker>;
   
-  // Create USDC
-  console.log("💵 Creating test USDC...");
-  const usdcMint = await createMint(connection, mintAuthority, mintAuthority.publicKey, null, 6);
+  // Create USDC mint with deterministic address
+  console.log("💵 Creating test USDC mint (deterministic)...");
+  const usdcMint = await createMint(connection, player1, mintAuthority.publicKey, null, 6, usdcMintKeypair);
   
   const player1TokenAccount = await createAccount(connection, player1, usdcMint, player1.publicKey);
   const player2TokenAccount = await createAccount(connection, player2, usdcMint, player2.publicKey);

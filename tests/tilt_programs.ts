@@ -1,12 +1,12 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { TiltPrograms } from "../target/types/tilt_programs";
+import { Zkpoker } from "../target/types/zkpoker";
 
-describe("tilt_programs", () => {
+describe("zkpoker", () => {
   // Configure the client to use the local cluster.
   anchor.setProvider(anchor.AnchorProvider.env());
 
-  const program = anchor.workspace.TiltPrograms as Program<TiltPrograms>;
+  const program = anchor.workspace.Zkpoker as Program<Zkpoker>;
 
   it("Is initialized!", async () => {
     // Add your test here.

@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("5mqXj7QV7SGLsJ3n6UCeau4sd7aDtaBH7E9WaHoiGKHA");
+declare_id!("9q1Yd4NeA172qXwvV5GEwqWrN3dHt1yQ3sNtUB2zavqa");
 
 mod state;
 mod instructions;
@@ -11,7 +11,7 @@ use state::*;
 use instructions::*;
 
 #[program]
-pub mod tilt_programs {
+pub mod zkpoker {
     use super::*;
 
     /// Initialize a player account

@@ -1,13 +1,13 @@
 [package]
-name = "tilt_programs"
+name = "zkpoker"
 version = "0.1.3"
-description = "Programs for fully onchain provably fair poker on Solana"
+description = "Programs for permissionless, provably fair poker on Solana"
 authors = ["calmdentist <calmdentist@proton.me>"]
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "tilt_programs"
+name = "zkpoker"
 
 [features]
 no-entrypoint = []

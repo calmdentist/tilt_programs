@@ -3,7 +3,7 @@ import { Program, AnchorProvider } from "@coral-xyz/anchor";
 import { PublicKey, SystemProgram, Keypair, SYSVAR_RENT_PUBKEY, ComputeBudgetProgram } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from "@solana/spl-token";
 import { keccak_256 } from "@noble/hashes/sha3";
-import { TiltPrograms } from "../target/types/tilt_programs";
+import { Zkpoker } from "../target/types/zkpoker";
 
 /**
  * Player action types
@@ -470,7 +470,7 @@ export class MentalPokerCrypto {
  */
 export class PokerClient {
   constructor(
-    public program: Program<TiltPrograms>,
+    public program: Program<Zkpoker>,
     public provider: AnchorProvider,
     public usdcMint: PublicKey,
     public programVaultTokenAccount: PublicKey
@@ -1002,7 +1002,7 @@ export class PokerClient {
  * Create a poker client instance
  */
 export function createPokerClient(
-  program: Program<TiltPrograms>,
+  program: Program<Zkpoker>,
   provider: AnchorProvider,
   usdcMint: PublicKey,
   programVaultTokenAccount: PublicKey

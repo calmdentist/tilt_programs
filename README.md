@@ -1,13 +1,34 @@
 # Tilt - Permissionless, provably fair onchain poker on Solana
 
 A fully on-chain, permissionless, provably fair poker protocol on Solana featuring:
-- **2-player heads-up poker** (fast-fold format)
-- **Commit-reveal randomness** for provable fairness
+- **2-player heads-up poker** will expand to multiplayer in the future
+- **Commutative Encryption** for provable fairness
 - **Complete poker hand evaluation** with standard Texas Hold'em rules
 - **Time-limited actions** with timeout protection
 - **Persistent player statistics**
 
-The fast-fold format means players are paired with someone new every hand - this marginalizes the edge gained from poker solvers. The 2 player format makes collusion impossible.
+## 🚀 Quick Setup
+
+### Prerequisites
+- **Bun** - JavaScript runtime and package manager
+- **Anchor CLI** - Version ^0.28
+- **Solana CLI** - Version ^1.18
+
+### Installation & Demo
+```bash
+# Make the setup script executable
+chmod +x ./setup.sh
+
+# Run the complete setup and demo
+./setup.sh
+```
+
+This will:
+1. Install dependencies
+2. Build the program
+3. Start a local Solana validator
+4. Deploy the program
+5. Run a full game demonstration
 
 ## 🎯 Architecture Overview
 
