@@ -2112,6 +2112,8 @@ version = "0.1.3"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "num-bigint",
+ "num-traits",
  "solana-program",
 ]
 

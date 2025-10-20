@@ -34,23 +34,26 @@ pub mod tilt_programs {
         instructions::withdraw_funds(ctx, amount)
     }
 
-    /// Create a new game with player 1's ephemeral public key
+    /// Create a new game with player 1's ephemeral public key and Merkle root
     pub fn create_game(
         ctx: Context<CreateGame>,
         stake_amount: u64,
         player1_ephemeral_pubkey: EphemeralPubkey,
+        deck_merkle_root: [u8; 32],
         game_id: u64,
     ) -> Result<()> {
-        instructions::create_game(ctx, stake_amount, player1_ephemeral_pubkey, game_id)
+        instructions::create_game(ctx, stake_amount, player1_ephemeral_pubkey, deck_merkle_root, game_id)
     }
 
-    /// Player 2 joins the game with their ephemeral public key and 9 doubly-encrypted cards
+    /// Player 2 joins the game with their ephemeral public key, doubly-encrypted cards, and Merkle proofs
     pub fn join_game(
         ctx: Context<JoinGame>,
         player2_ephemeral_pubkey: EphemeralPubkey,
         encrypted_cards: [EncryptedCard; 9],
+        singly_encrypted_cards: [EncryptedCard; 9],
+        merkle_proofs: Vec<MerkleProof>,
     ) -> Result<()> {
-        instructions::join_game(ctx, player2_ephemeral_pubkey, encrypted_cards)
+        instructions::join_game(ctx, player2_ephemeral_pubkey, encrypted_cards, singly_encrypted_cards, merkle_proofs)
     }
 
     /// Reveal community cards (two-step process for flop, turn, river)

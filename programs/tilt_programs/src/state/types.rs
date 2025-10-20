@@ -59,6 +59,14 @@ pub struct EphemeralPubkey {
     pub data: [u8; 32], // 256-bit public key
 }
 
+/// Merkle proof for verifying a card was part of the original deck
+/// For a 52-card deck, we need 6 proof elements (log2(52) rounded up)
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct MerkleProof {
+    pub proof: Vec<[u8; 32]>, // Sibling hashes from leaf to root
+    pub index: u8,             // Original index of the card in the deck (0-51)
+}
+
 // /// Hand rankings (lower is better, like in poker)
 //     HighCard = 0,
 //     OnePair = 1,
