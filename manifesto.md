@@ -1,66 +1,34 @@
-# zkPoker: Permissionless, provably fair poker on Solana
+# zkPoker: Permissionless, Provably Fair Poker on Solana
 
 ## 1. Overview
 
-This document outlines a cryptographic protocol for implementing a secure, trustless, two-player (heads-up) poker game on the Solana blockchain. The core challenge is to manage the deck and player hands without a central, trusted dealer, ensuring that no player has an unfair advantage or access to hidden information. Permissionless, provably fair, unstoppable poker.
+zkPoker is a protocol for a secure, trustless, two-player (heads-up) poker game on the Solana blockchain. Its purpose is to create an on-chain poker experience where fairness is not assumed but cryptographically guaranteed, removing the need for any trusted third party or centralized server.
 
-The protocol uses a heads-up (2 player), fast-fold (pair with new player after each hand) model, which mitigates colluding and the use of solvers to a large degree, if not entirely.
+The design is built on three core principles:
 
-This is achieved using a commutative encryption scheme - Polhig-Hellman - and a bespoke architecture with the property that players only place 1 transaction to create/join a game, and 1 transaction per action (call, bet, fold, etc). CUs are optimized so that the most intensive instruction consumes less than 400,000 CUs.
+1.  **Optimistic Execution**: To maximize gas efficiency, the on-chain program does not verify most cryptographic proofs during gameplay. It assumes players are acting honestly until a dispute is formally raised.
+2.  **Cryptographic Guarantees**: The fairness of the deck is **not** optimistic. It is guaranteed at the start of every hand using a mandatory, on-chain verified Zero-Knowledge Proof, preventing stacked or duplicate card attacks from the outset.
+3.  **Client-Side Computation**: All heavy cryptographic operations (encryption, proof generation) are handled by the players' local clients. The blockchain only acts as a state machine and an impartial judge for disputes.
 
-## 2. The Protocol
+## 2. Core Cryptography
 
-The protocol is divided into three main phases: Setup, Gameplay, and Verification.
+The protocol's security relies on two key cryptographic primitives:
 
-### Phase 1: Game Setup & Shuffling
+### Commutative Encryption: Paillier Cryptosystem
 
-The goal of this phase is to create a shuffled, encrypted deck that is committed to the on-chain game state, preventing any party from manipulating the deck.
+To achieve a secure, multi-party shuffle, we use the Paillier cryptosystem. Unlike deterministic schemes, Paillier is **probabilistic**, meaning the same card encrypted twice will produce a different ciphertext each time. This is a critical feature that prevents players from brute-force guessing cards by re-encrypting all 52 possibilities.
 
-1.  **Key Generation**: Both players (Player 1 and Player 2) generate ephemeral keypairs for a **commutative encryption scheme** (e.g., Pohlig-Hellman).
-2.  **Player 1's Shuffle, Encrypt, and Commit**: Player 1 takes a canonical 52-card deck, shuffles it locally, and encrypts each card with their ephemeral public key. They then compute a **Merkle root** of this 52-card singly-encrypted deck. To create the game, Player 1 submits their public key and this Merkle root to the program. The full encrypted deck is then passed to Player 2 off-chain.
-3.  **Player 2's Shuffle, Encrypt, and Prove**: Player 2 takes the singly-encrypted deck, shuffles it again locally, and applies a second layer of encryption using their own key. From this final deck, Player 2 selects the 9 cards necessary for the hand (2 pocket cards for each player, 5 community cards). To join the game, Player 2 must submit these 9 doubly-encrypted cards to the program, along with **Merkle proofs** for each of the 9 cards, proving they originated from the deck Player 1 committed to. The program verifies these proofs against the stored Merkle root before allowing the game to start.
+### Zero-Knowledge Proofs: ZK-SNARKs (Groth16)
 
-At the end of this phase, the 9 cards for the hand are provably selected from the original shuffled deck and are committed to the chain. No single party knows their plaintext values, and neither party could have manipulated the deck composition.
+To prove actions were performed correctly without revealing private information (like a player's private key), we use ZK-SNARKs. We specifically use the Groth16 proving system because it produces proofs that are extremely small and cheap to verify on-chain, making the dispute resolution process highly efficient.
 
-### Phase 2: Gameplay
+The key proofs are:
+-   **`ProveCorrectDeckCreation` (Mandatory)**: Guarantees the initial deck is fair.
+-   **`ProveCorrectReshuffle` & `ProveCorrectDecryption` (Optimistic)**: Used to resolve disputes during gameplay.
 
-During gameplay, cards are revealed to individual players (pocket cards) or both players (community cards) without exposing the rest of the deck.
+## 3. The Protocol in Brief
 
-1.  **Dealing Pocket Cards**: To deal a card to Player 1, Player 2 provides the singly-decrypted card to Player 1 (decrypted with Player 2's key). This happens via off-chain communication.
-    *   **Client-Side Verification**: Before Player 1 accepts and decrypts the card, their client **must** perform a crucial verification step. The client re-encrypts the received card with Player 2's public key and confirms that the result matches the original doubly-encrypted card stored on-chain. This proves Player 2 acted honestly.
-    *   If the verification fails, Player 2 is considered to be uncooperative, and Player 1 can claim victory via the timeout mechanism.
-    *   This entire process is mirrored for Player 2's cards. The program only needs to know which encrypted cards were assigned to which player.
-2.  **Dealing Community Cards**: To reveal a community card (e.g., on the flop), a sequential, timed reveal process is initiated on-chain. Player 1 must first submit their decryption of the card(s). Then, Player 2 has a fixed time limit to submit their decryption.
-    *   **Progressive Verification**: As soon as the plaintext for a community card (or set of cards, like the flop) is revealed to the program, the program **immediately verifies it** by re-encrypting the plaintext with the players' public keys and checking it against the stored encrypted version. This distributes the computational load and ensures fraud is detected instantly.
-    *   If a player fails to act within their time limit, they forfeit the pot (see Liveness and Security).
-3.  **Wagering**: All betting actions happen on-chain, with funds being transferred into a shared pot account, as is standard.
-
-### Phase 3: Showdown & Verification
-
-This is the final on-chain phase. When a hand concludes and goes to a showdown, the program verifies the players' pocket cards to determine the winner.
-
-1.  **Card Reveal**: Players reveal their plaintext pocket cards to the program.
-2.  **On-Chain Verification**: The program verifies only the pocket cards revealed by the players. The community cards have already been verified progressively throughout the hand.
-    *   For a revealed pocket card `C`, the program calculates `Verified_C = Encrypt_P2(Encrypt_P1(C))`.
-    *   It then compares this result with the original doubly-encrypted card assigned to that player.
-    *   If they match, the player's hand is proven to be legitimate.
-3.  **Winner Determination**: After verifying the pocket cards, the program combines them with the already-verified community cards and runs standard poker hand-ranking logic to determine the winner and execute the pot distribution.
-
-## 3. Technical Implementation on Solana
-
-### Cryptographic Primitive
-
-*   **Algorithm**: Pohlig-Hellman, which relies on modular exponentiation (`C^e mod p`).
-*   **Security**: A 256-bit prime modulus `p` is sufficient. This provides security that is computationally infeasible to break within the short lifespan of a poker hand, while significantly reducing the on-chain compute cost compared to larger primes.
-*   **Crate**: A Rust big integer library like `num-bigint` is required to perform the necessary `modpow` operations within the Anchor program.
-
-### Compute Unit (CU) Management
-
-*   The verification step is computationally expensive. By using a **progressive verification** model, the load is distributed across multiple transactions instead of a single, massive one at the end.
-*   **Peak Cost**: The most expensive transactions will be the flop reveal (verifying 3 cards) and the final showdown (verifying up to 4 cards). These will likely require **400,000 - 500,000 CUs**.
-*   **Requirement**: All client-side transactions that trigger a card reveal or showdown **must** include a `ComputeBudgetInstruction` to request a higher CU limit.
-
-### Liveness and Security
-
-*   **Griefing Prevention**: The protocol must include strict, on-chain timeouts for every player action (betting, and especially cryptographic actions like revealing community cards). The game state must track whose turn it is and when their deadline to act expires.
-*   **Player Bonds**: To disincentivize stalling, each player is required to post a bond at the start of the game. If a player fails to act within a timeout period, their opponent can call a `claim_on_timeout` instruction, which awards them the pot and the stalling player's bond.
+1.  **Match Setup**: Two players join a game, each posting their Paillier public key and funding their stacks. These keys are persistent for the entire match.
+2.  **The Secure Shuffle**: For each hand, Player A creates and commits to a 52-card deck, proven fair with an on-chain verified `ProveCorrectDeckCreation` ZKP. Player B then re-shuffles and re-encrypts this deck, submitting an optimistic `ProveCorrectReshuffle` ZKP.
+3.  **Optimistic Gameplay**: Players take turns betting and revealing cards. All card reveals are accompanied by an optimistic `ProveCorrectDecryption` ZKP. Each player's client verifies these proofs off-chain.
+4.  **Dispute Resolution**: If a client detects an invalid proof, the player can call `claim_timeout` on-chain. This forces the accused player's ZKP to be verified by the program. If the proof is invalid, the cheater forfeits the pot. This makes the game self-policing and trustless.
