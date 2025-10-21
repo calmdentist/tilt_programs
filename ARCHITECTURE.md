@@ -1,108 +1,131 @@
-# zkPoker Solana Program Architecture
+# ZK Poker Final Architecture
 
-## 1. Overview
+This document outlines the high-level architecture for an optimistic, provably fair two-player (heads-up) on-chain poker game on Solana. The design supports continuous, multi-hand gameplay and uses Zero-Knowledge Proofs (ZKPs) to guarantee fairness and resolve disputes without a trusted third party.
 
-This document outlines the on-chain program architecture for zkPoker, a trustless, two-player Texas Hold'em game on Solana. The architecture is based on a "mental poker" protocol using commutative encryption to ensure card privacy and fairness without a trusted dealer.
+## Core Principles
 
-## 2. Program Instructions
+1.  **Optimistic Execution**: The on-chain program does not perform cryptographic verification during betting or card reveals. It acts as a state machine, assuming all player actions are valid until a formal dispute is raised.
+2.  **Cryptographic Guarantees**: The fairness of the deck (uniqueness and correct shuffling) is **not** optimistic. It is guaranteed at the start of every hand using a mandatory, non-disputable Zero-Knowledge Proof.
+3.  **Client-Side Computation**: All intensive cryptographic operations (key generation, encryption, decryption, ZKP generation) are performed on the players' local machines. The blockchain never has access to private keys.
+4.  **Dispute Resolution via ZK-SNARKs**: If one player accuses another of cheating during gameplay (e.g., an invalid card reveal), the accused is compelled to produce a ZK-SNARK proving their action was valid. This makes dispute resolution deterministic and trustless.
 
-The program exposes a set of instructions that players call to advance the game state. These instructions are designed to be simple, with complex cryptographic operations happening on the client side whenever possible.
+---
 
-### `create_game()`
-Initializes a new game state account. Called only by Player 1.
--   **Accounts**:
-    -   `game_state`: The new account to be created (PDA).
-    -   `player1`: The signer and game creator.
-    -   `system_program`: Required for account creation.
--   **Args**:
-    -   `player1_ephemeral_pubkey`: Player 1's public key for the commutative cipher.
--   **Logic**:
-    1.  Creates and initializes the `GameState` account.
-    2.  Sets `player1` and their ephemeral public key.
-    3.  Transfers the buy-in from Player 1 to the pot/escrow.
-    4.  Sets the game status to `WaitingForPlayer2`.
+## 1. Cryptographic Primitives
 
-### `join_game()`
-Called by Player 2 to join an existing game.
--   **Accounts**:
-    -   `game_state`: The game account to join.
-    -   `player2`: The signer and joining player.
--   **Args**:
-    -   `player2_ephemeral_pubkey`: Player 2's public key.
-    -   `encrypted_cards`: An array of the 9 doubly-encrypted cards needed for the hand.
--   **Logic**:
-    1.  Validates that the game is waiting for a player.
-    2.  Sets `player2` and their ephemeral public key.
-    3.  Stores the 9 doubly-encrypted cards.
-    4.  Transfers the buy-in from Player 2.
-    5.  Posts blinds automatically.
-    6.  Sets the game status to `PreFlopBetting` and sets the turn to the first player to act.
+### Commutative Encryption: Paillier Cryptosystem
 
-### `player_action()`
-The primary instruction for all betting actions.
--   **Accounts**:
-    -   `game_state`: The active game.
-    -   `player`: The signer making the action.
--   **Args**:
-    -   `action`: An enum representing the move (`Fold`, `Check`, `Call`, `Raise`).
-    -   `amount`: The value of the raise, if applicable.
--   **Logic**:
-    1.  Verifies it is the signer's turn to act.
-    2.  Validates the action against the current game state (e.g., cannot `Check` a bet).
-    3.  Updates player stacks and the pot.
-    4.  If a player folds, the game moves to `Finished`, and the other player wins.
-    5.  If the betting round concludes, updates the game state to await the next street (e.g., `AwaitingFlopReveal`).
-    6.  Otherwise, switches the turn to the other player.
+-   **Why Paillier?**: It is **probabilistic** (non-deterministic), which is critical to prevent brute-force attacks where a player could identify cards by re-encrypting them. It also has homomorphic properties that enable the commutative shuffling effect.
+-   **Key Generation**: Each player generates their Paillier keypair off-chain and posts their public key to the on-chain `Game` account once at the start of the match.
 
-### `reveal_community_cards()`
-A two-step instruction to reveal the flop, turn, or river.
--   **Accounts**:
-    -   `game_state`: The active game.
-    -   `player`: The signer.
--   **Args**:
-    -   `decryption_shares`: The player's decrypted shares of the community card(s) for the current street.
-    -   `plaintext_cards` (optional, Player 2 only): The final plaintext of the cards.
--   **Logic**:
-    1.  **Called by Player 1**: Submits their decryption shares. The program stores them and sets a timeout for Player 2. Status becomes `AwaitingPlayer2Share`.
-    2.  **Called by Player 2**: Submits their decryption shares. The program combines them with Player 1's shares to get the plaintext cards.
-    3.  **Verification**: The program immediately re-encrypts the revealed plaintext cards with both players' public keys and verifies they match the on-chain encrypted versions.
-    4.  If verified, the plaintext cards are stored, and the status moves to the next betting round (e.g., `PostFlopBetting`).
+### Fairness & Dispute Resolution: ZK-SNARKs (Groth16)
 
-### `resolve_hand()`
-A two-step instruction for the final showdown.
--   **Accounts**:
-    -   `game_state`: The active game.
-    -   `player`: The signer.
--   **Args**:
-    -   `plaintext_pocket_cards`: The player's two hole cards.
--   **Logic**:
-    1.  **Called by First Player**: The player reveals their two plaintext pocket cards. The program verifies them against the stored encrypted versions. If valid, stores the hand and sets a timeout for the other player.
-    2.  **Called by Second Player**: The player reveals their two plaintext pocket cards. The program verifies them.
-    3.  **Winner Determination**: With both hands verified, the program combines them with the community cards, runs the hand-ranking logic, and determines the winner.
-    4.  The pot is dispersed to the winner, and the game status is set to `Finished`.
+-   **Why Groth16?**: It produces small proofs that are extremely cheap to verify on-chain, thanks to Solana's precompiles for the required elliptic curve operations.
+-   **Required ZK Circuits**:
+    -   **`ProveCorrectShuffle` (Mandatory)**: This is a prerequisite for every hand. It proves that the doubly-encrypted 52-card deck is a valid permutation and re-encryption of the 52 unique cards committed to by the other player. This prevents duplicate card and deck stacking attacks.
+    -   **`ProveCorrectDecryption` (For Disputes)**: Proves that a player correctly used their private key to partially decrypt a card. Used to resolve disputes over card reveals.
+    -   **`ProveHandEvaluation` (For Showdown)**: Proves that a player correctly evaluated their best 5-card hand from the 7 cards available to them. This prevents false claims of winning at showdown.
 
-### `claim_on_timeout()`
-A catch-all instruction to handle unresponsive players.
--   **Accounts**:
-    -   `game_state`: The active game.
-    -   `player`: The signer claiming the timeout.
--   **Logic**:
-    1.  Checks the game's current timestamp against the action deadline.
-    2.  If the deadline has passed, the signer is declared the winner.
-    3.  The pot and the opponent's bond are transferred to the signer.
-    4.  The game status is set to `Finished`.
+---
 
-## 3. Game Life-cycle
+## 2. On-Chain Components (Anchor Program)
 
-The game progresses through a series of defined states. A player's client can bundle instructions (e.g., a `player_action` that ends a betting round can be sent in the same transaction as the first `reveal_community_cards` call) to streamline the flow.
+The program manages a long-running match between two players, with state separated between the overall match and the current hand.
 
-1.  **`WaitingForPlayer2`**: Game created by P1.
-2.  **`PreFlopBetting`**: P2 joins, blinds posted. Betting occurs via `player_action`.
-3.  **`AwaitingFlopReveal`**: Pre-flop betting ends. Awaiting `reveal_community_cards`.
-4.  **`PostFlopBetting`**: Flop is revealed and verified. Betting occurs.
-5.  **`AwaitingTurnReveal`**: Flop betting ends. Awaiting `reveal_community_cards`.
-6.  **`PostTurnBetting`**: Turn is revealed and verified. Betting occurs.
-7.  **`AwaitingRiverReveal`**: Turn betting ends. Awaiting `reveal_community_cards`.
-8.  **`PostRiverBetting`**: River is revealed and verified. Final betting round.
-9.  **`Showdown`**: Final betting ends. Awaiting `resolve_hand` calls.
-10. **`Finished`**: Hand is resolved either by a fold, a completed showdown, or a timeout. The account is now ready to be closed.
+### `Game` Account (The Match Table)
+
+A PDA that stores the persistent state of the match.
+
+```rust
+#[account]
+pub struct Game {
+    pub players: [Pubkey; 2],
+    // Cryptographic keys, set once at the start
+    pub paillier_pks: [PaillierPublicKey; 2],
+    // Player chip stacks, which persist between hands
+    pub player_stacks: [u64; 2],
+    pub current_hand_id: u64,
+    pub game_status: GameStatus, // Enum: Active, Concluded
+
+    // State for the currently active hand
+    pub hand: HandState,
+}
+```
+
+### `HandState` Struct (The Current Hand)
+
+This struct is embedded in the `Game` account and is reset at the beginning of each new hand.
+
+```rust
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
+pub struct HandState {
+    pub state: HandStage, // Enum: Shuffling, Betting, Showdown, Complete, Dispute
+    pub dealer_index: u8,
+    pub current_turn_index: u8,
+
+    // Cryptographic commitment from Player A (non-dealer) for this hand's deck
+    pub deck_merkle_root: [u8; 32],
+    // The full 52-card deck, committed to by Player B (dealer) + ZKP
+    pub deck: Vec<EncryptedCard>,
+
+    // Betting state for the hand
+    pub pot: u64,
+    pub bets: [u64; 2],
+    pub betting_round: BettingRound,
+
+    // Storage for cards revealed during this hand
+    pub revealed_cards: Vec<(u8, PartiallyDecryptedCard)>,
+
+    // Dispute state for the hand
+    pub dispute_active: bool,
+    pub challenger_index: u8,
+    pub disputed_action: DisputedAction,
+}
+```
+
+### Instructions (Smart Contract Functions)
+
+-   **Match Setup**:
+    -   `create_game(player_b, starting_stack)`: Initializes the `Game` account.
+    -   `join_game(paillier_pk)`: Player B joins and posts their key. Player A does the same.
+-   **Hand Lifecycle**:
+    -   `start_new_hand()`: Resets the `HandState`, moves the dealer button, and posts blinds from the main `player_stacks`.
+    -   `commit_deck(merkle_root)`: The non-dealer commits to their singly-encrypted deck by posting its Merkle root.
+    -   `set_shuffled_deck(deck, proof)`: The dealer submits the final 52-card doubly-encrypted deck along with the mandatory `ProveCorrectShuffle` ZKP. The program verifies the proof on-chain before allowing the hand to proceed.
+-   **Gameplay**:
+    -   `bet(amount)`: For checking, betting, raising, or folding.
+    -   `reveal_card(deck_index, partially_decrypted_card)`: A player reveals a community card. This action is verified off-chain by the opponent using a client-side ZKP exchange.
+    -   `claim_winnings(proof)`: At showdown, the winning player claims the pot by providing a `ProveHandEvaluation` ZKP. The program verifies the proof and transfers the pot to the winner's main stack.
+-   **Disputes & Match End**:
+    -   `raise_dispute(action)`: A player challenges an opponent's action, freezing the hand.
+    -   `resolve_dispute(proof)`: The accused must submit the appropriate ZKP to the chain for on-chain verification.
+    -   `leave_game()`: A player ends the match and withdraws their stack.
+
+---
+
+## 3. Off-Chain Client & Game Flow
+
+The client application is responsible for all cryptography and for presenting a seamless experience.
+
+### 1. Match Setup
+-   Player A calls `create_game`. Player B calls `join_game`. Both post their Paillier keys. Stacks are funded.
+
+### 2. Hand Lifecycle (Loop)
+-   **a. Start Hand**: Any player calls `start_new_hand()`. Blinds are posted. The non-dealer is now Player A for this hand, the dealer is Player B.
+
+-   **b. The Secure Shuffle (Mandatory Proofs)**:
+    -   **Player A's Client**: Generates a 52-card deck, encrypts it with `pk_A`, builds a Merkle tree from the 52 unique ciphertexts, and calls `commit_deck(merkle_root)`. It then sends the 52 ciphertexts to Player B off-chain.
+    -   **Player B's Client**: Receives the 52 ciphertexts. It shuffles and re-encrypts them to create the final 52-card doubly-encrypted deck. It then generates a `ProveCorrectShuffle` ZKP. Finally, it calls `set_shuffled_deck(deck, proof)`. The on-chain program verifies the proof. **If the proof is invalid, the transaction fails, and the hand cannot begin.**
+
+-   **c. Gameplay (Optimistic with Off-Chain Verification)**:
+    -   Betting proceeds via the `bet` instruction.
+    -   When a card needs to be revealed, the responsible player's client computes the partial decryption and a `ProveCorrectDecryption` ZKP. It sends both to the opponent **off-chain**.
+    -   The opponent's client verifies the proof. If valid, the game continues. If invalid, the client immediately calls `raise_dispute` to escalate the issue to the on-chain program.
+
+-   **d. Showdown**:
+    -   The player claiming to be the winner calls `claim_winnings`, providing the `ProveHandEvaluation` ZKP. The contract verifies the proof and awards the pot.
+
+-   **e. Loop**: A new hand can be started by calling `start_new_hand()`.
+
+### 3. Match End
+-   A player calls `leave_game` to withdraw their funds and conclude the match.
