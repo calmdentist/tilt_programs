@@ -1,394 +1,403 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::keccak;
 use super::types::*;
-use crypto_bigint::{U256, U512, Encoding, NonZero};
 
-// 256-bit safe prime for Pohlig-Hellman cipher
-// This is 2^256 - 189 in big-endian byte format
-// Chosen for: (1) Large enough for security, (2) Small enough for on-chain compute
-const PRIME_BYTES: [u8; 32] = [
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x43,
-];
-
-/// Helper function to get the prime modulus as U256
-fn get_prime() -> U256 {
-    U256::from_be_bytes(PRIME_BYTES)
-}
-
-/// Helper function to perform modular exponentiation: base^exp mod modulus
-/// Uses square-and-multiply algorithm with crypto-bigint
-fn modpow(base: &U256, exp: &U256, modulus: &U256) -> U256 {
-    let modulus_nz = NonZero::new(*modulus).unwrap();
-    let modulus_wide = U512::from(modulus);
-    let modulus_wide_nz = NonZero::new(modulus_wide).unwrap();
-    
-    let mut result = U256::ONE;
-    let mut base_pow = *base % modulus_nz;
-    
-    // Process each bit of the exponent (LSB to MSB)
-    for i in 0..256 {
-        let word_index = i / 64;
-        let bit_offset = i % 64;
-        let bit_is_set = (exp.as_words()[word_index] >> bit_offset) & 1 == 1;
-        
-        if bit_is_set {
-            // result = (result * base_pow) mod modulus
-            // mul_wide returns (high, low) as (U256, U256)
-            let (high, low) = result.mul_wide(&base_pow);
-            // Combine into U512
-            let product_wide = concat_u256_to_u512(&low, &high);
-            result = (product_wide % modulus_wide_nz).resize();
-        }
-        
-        // base_pow = (base_pow * base_pow) mod modulus
-        let (high, low) = base_pow.mul_wide(&base_pow);
-        let square_wide = concat_u256_to_u512(&low, &high);
-        base_pow = (square_wide % modulus_wide_nz).resize();
-    }
-    
-    result
-}
-
-/// Helper to concatenate two U256 values into a U512 (low || high)
-fn concat_u256_to_u512(low: &U256, high: &U256) -> U512 {
-    let low_words = low.as_words();
-    let high_words = high.as_words();
-    U512::from_words([
-        low_words[0],
-        low_words[1],
-        low_words[2],
-        low_words[3],
-        high_words[0],
-        high_words[1],
-        high_words[2],
-        high_words[3],
-    ])
-}
-
-/// Represents a single poker hand/game between two players
+/// The main Game account - persists across multiple hands
+/// This is a PDA that stores the long-running match state between two players
 #[account]
-pub struct GameState {
-    pub game_id: u64,
-    pub player1: Pubkey,
-    pub player2: Pubkey,
+pub struct Game {
+    /// The two players in this game
+    pub players: [Pubkey; 2],
     
-    // Token vault for this game
+    /// Paillier public keys for each player (set once at game creation/join)
+    pub paillier_pks: [PaillierPublicKey; 2],
+    
+    /// Player chip stacks (persist across hands)
+    pub player_stacks: [u64; 2],
+    
+    /// Current hand number (increments with each new hand)
+    pub current_hand_id: u64,
+    
+    /// Overall game status
+    pub game_status: GameStatus,
+    
+    /// Token vault for this game
     pub token_vault: Pubkey,
     pub vault_bump: u8,
     
-    // Stake and pot
-    pub stake_amount: u64,
-    pub pot: u64,
-    pub player1_current_bet: u64,
-    pub player2_current_bet: u64,
-    
-    // Player chip stacks (remaining balance in this game)
-    pub player1_stack: u64,
-    pub player2_stack: u64,
-    
-    // Player bonds (for griefing prevention)
-    pub player1_bond: u64,
-    pub player2_bond: u64,
-    
-    // Ephemeral keys for Pohlig-Hellman encryption
-    pub player1_ephemeral_pubkey: EphemeralPubkey,
-    pub player2_ephemeral_pubkey: EphemeralPubkey,
-    
-    // Merkle root of Player 1's singly-encrypted deck (52 cards)
-    // This commits Player 1 to their shuffled deck before Player 2 acts
-    pub deck_merkle_root: [u8; 32],
-    
-    // Encrypted cards (9 total: 2 per player + 5 community)
-    // Indices: 0-1 = Player 1 pocket cards, 2-3 = Player 2 pocket cards, 4-8 = Community cards
-    pub encrypted_cards: [EncryptedCard; 9],
-    
-    // Decryption shares for community cards (stored during two-step reveal)
-    pub player1_flop_shares: [EncryptedCard; 3],  // Flop (3 cards)
-    pub player1_turn_share: EncryptedCard,         // Turn (1 card)
-    pub player1_river_share: EncryptedCard,        // River (1 card)
-    
-    // Revealed plaintext cards
-    pub player1_hand: [u8; 2],  // Only revealed at showdown
-    pub player2_hand: [u8; 2],  // Only revealed at showdown
-    pub community_cards: [u8; 5],  // Revealed progressively
-    pub community_cards_revealed: u8, // 0, 3 (flop), 4 (turn), 5 (river)
-    
-    // Game state
-    pub stage: GameStage,
-    pub current_player: u8, // 1 or 2
-    pub dealer_button: u8, // 1 or 2 (small blind is dealer button in heads-up)
-    pub last_action: PlayerActionType,
-    
-    // Positions (for heads-up: button is small blind and acts first pre-flop)
+    /// Blinds configuration (can be updated between hands)
     pub small_blind: u64,
     pub big_blind: u64,
     
-    // Player states
-    pub player1_folded: bool,
-    pub player2_folded: bool,
-    pub player1_all_in: bool,
-    pub player2_all_in: bool,
-    pub player1_revealed_hand: bool,  // For showdown tracking
-    pub player2_revealed_hand: bool,  // For showdown tracking
-    
-    // Timing
-    pub created_at: i64,
-    pub last_action_at: i64,
+    /// Timing configuration
     pub action_timeout: i64, // seconds
-    pub reveal_deadline: i64, // Specific deadline for two-step reveals
     
-    // Result
-    pub winner: Option<Pubkey>,
-    pub winning_hand_rank: Option<u16>,
+    /// Invite-only game (if Some, only this pubkey can join)
+    pub invited_opponent: Option<Pubkey>,
     
+    /// State for the currently active hand
+    pub hand: HandState,
+    
+    /// Bump seed for PDA
     pub bump: u8,
+    pub last_action_timestamp: i64, // Timestamp of the last move in the match
 }
 
-impl GameState {
-    pub const LEN: usize = 8 + // discriminator
-        8 + // game_id
-        32 + // player1
-        32 + // player2
+/// HandState - embedded in Game, reset at the start of each new hand
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
+pub struct HandState {
+    /// Current stage of the hand
+    pub stage: HandStage,
+    
+    /// Dealer index (0 or 1) - rotates each hand
+    pub dealer_index: u8,
+    
+    /// Current turn index (0 or 1) - whose turn to act
+    pub current_turn_index: u8,
+    
+    /// Timestamp for the current player's action
+    pub action_deadline: i64,
+    
+    /// Merkle root of the non-dealer's singly-encrypted deck
+    /// This is the commitment submitted in create_hand
+    pub deck_merkle_root: [u8; 32],
+    
+    /// The full 52-card doubly-encrypted deck (submitted by dealer in join_hand)
+    pub doubly_encrypted_deck_merkle_root: [u8; 32],
+    
+    /// Betting state for this hand
+    pub pot: u64,
+    pub bets: [u64; 2], // Current bets for each player in this round
+    pub betting_round: BettingRound,
+    
+    /// Revealed cards during this hand
+    /// Stores (card_index, partially_decrypted_card_data) tuples
+    /// Used for progressive card reveals (singly-decrypted, then fully-decrypted)
+    pub revealed_cards: [Option<(u8, PartiallyDecryptedCard)>; 9],
+    
+    /// Fully decrypted community cards (plaintext)
+    /// Indices: [flop1, flop2, flop3, turn, river]
+    pub community_cards: [Option<u8>; 5],
+    
+    /// Fully decrypted pocket cards for each player (revealed at showdown)
+    /// Each player has 2 pocket cards
+    pub pocket_cards: [Option<[u8; 2]>; 2],
+    
+    /// ZK-SNARK proofs submitted during this hand (stored optimistically)
+    pub stored_proofs: [Option<StoredProof>; 20],
+    
+    /// Dispute state
+    pub dispute_active: bool,
+    pub challenger_index: u8, // 0 or 1
+    pub disputed_action: DisputedAction,
+    
+    /// Player flags for this hand
+    pub player_folded: [bool; 2],
+    pub player_all_in: [bool; 2],
+    pub player_revealed_showdown: [bool; 2],
+    
+    /// Timing
+    pub hand_started_at: i64,
+    pub last_action_at: i64,
+    
+    /// Hand result (set after resolve_hand)
+    pub winner: Option<u8>, // 0 or 1, or None for split pot
+    pub winning_hand_rank: Option<HandRank>,
+}
+
+/// Stored ZK-SNARK proof with metadata
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
+pub struct StoredProof {
+    pub proof_type: ProofType,
+    pub submitter_index: u8, // 0 or 1
+    pub proof: ZkProof,
+    pub submitted_at: i64,
+}
+
+/// Types of ZK-SNARK proofs
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
+pub enum ProofType {
+    /// Mandatory proof: deck contains 52 unique cards (verified immediately)
+    DeckCreation,
+    /// Optimistic: deck was correctly reshuffled and re-encrypted
+    Reshuffle,
+    /// Optimistic: card was correctly decrypted (specify card index)
+    CardDecryption { card_index: u8 },
+    /// Optimistic: pocket cards were correctly revealed at showdown
+    ShowdownReveal { player_index: u8 },
+}
+
+impl Game {
+    /// Calculate space needed for Game account
+    /// Note: This is a rough estimate, actual size will vary based on Vec lengths
+    pub const BASE_LEN: usize = 8 + // discriminator
+        (32 * 2) + // players
+        (4 + 256 + 4 + 257) * 2 + // paillier_pks (rough estimate for Vec<u8>)
+        (8 * 2) + // player_stacks
+        8 + // current_hand_id
+        1 + // game_status
         32 + // token_vault
         1 + // vault_bump
-        8 + // stake_amount
-        8 + // pot
-        8 + // player1_current_bet
-        8 + // player2_current_bet
-        8 + // player1_stack
-        8 + // player2_stack
-        8 + // player1_bond
-        8 + // player2_bond
-        32 + // player1_ephemeral_pubkey
-        32 + // player2_ephemeral_pubkey
-        32 + // deck_merkle_root
-        (32 * 9) + // encrypted_cards (9 cards)
-        (32 * 3) + // player1_flop_shares (3 cards)
-        32 + // player1_turn_share
-        32 + // player1_river_share
-        2 + // player1_hand
-        2 + // player2_hand
-        5 + // community_cards
-        1 + // community_cards_revealed
-        1 + 1 + 1 + 1 + // stage, current_player, dealer_button, last_action
         8 + // small_blind
         8 + // big_blind
-        1 + 1 + 1 + 1 + 1 + 1 + // player flags (folded, all_in, revealed_hand x2)
-        8 + 8 + 8 + 8 + // timing (created_at, last_action_at, action_timeout, reveal_deadline)
-        33 + // winner (Option<Pubkey>)
-        3 + // winning_hand_rank (Option<u16>)
-        1; // bump
-
+        8 + // action_timeout
+        (1 + 32) + // invited_opponent (Option<Pubkey>)
+        1 + // bump
+        8 + // last_action_timestamp
+        4096; // HandState (we'll allocate a large buffer for the embedded state)
+    
+    /// Initialize a new hand within this game
+    pub fn init_new_hand(&mut self, clock: &Clock) {
+        // Rotate dealer
+        let new_dealer_index = if self.current_hand_id == 0 {
+            0 // First hand, player 0 is dealer
+        } else {
+            1 - self.hand.dealer_index // Alternate dealer
+        };
+        
+        // Non-dealer acts first pre-flop in our model
+        let non_dealer_index = 1 - new_dealer_index;
+        
+        self.hand = HandState {
+            stage: HandStage::WaitingForHandCreation,
+            dealer_index: new_dealer_index,
+            current_turn_index: non_dealer_index,
+            action_deadline: clock.unix_timestamp + self.action_timeout,
+            deck_merkle_root: [0u8; 32],
+            doubly_encrypted_deck_merkle_root: [0u8; 32],
+            pot: 0,
+            bets: [0, 0],
+            betting_round: BettingRound::PreFlop,
+            revealed_cards: [None; 9],
+            community_cards: [None; 5],
+            pocket_cards: [None; 2],
+            stored_proofs: [None; 20],
+            dispute_active: false,
+            challenger_index: 0,
+            disputed_action: DisputedAction::None,
+            player_folded: [false, false],
+            player_all_in: [false, false],
+            player_revealed_showdown: [false, false],
+            hand_started_at: clock.unix_timestamp,
+            last_action_at: clock.unix_timestamp,
+            winner: None,
+            winning_hand_rank: None,
+        };
+        
+        self.current_hand_id += 1;
+    }
+    
+    /// Get player pubkey by index (0 or 1)
+    pub fn get_player(&self, index: u8) -> Result<Pubkey> {
+        match index {
+            0 => Ok(self.players[0]),
+            1 => Ok(self.players[1]),
+            _ => err!(GameError::InvalidPlayerIndex),
+        }
+    }
+    
+    /// Get player index (0 or 1) from pubkey
+    pub fn get_player_index(&self, player: &Pubkey) -> Result<u8> {
+        if player == &self.players[0] {
+            Ok(0)
+        } else if player == &self.players[1] {
+            Ok(1)
+        } else {
+            err!(GameError::InvalidPlayer)
+        }
+    }
+    
+    /// Check if it's the specified player's turn
+    pub fn is_player_turn(&self, player: &Pubkey) -> Result<bool> {
+        let player_index = self.get_player_index(player)?;
+        Ok(player_index == self.hand.current_turn_index)
+    }
+    
+    /// Check if action timeout has been exceeded
+    pub fn is_timeout_exceeded(&self, clock: &Clock) -> bool {
+        clock.unix_timestamp > self.hand.last_action_at + self.action_timeout
+    }
+    
+    /// Post blinds at the start of a hand
+    pub fn post_blinds(&mut self) -> Result<()> {
+        let dealer_index = self.hand.dealer_index as usize;
+        let non_dealer_index = (1 - self.hand.dealer_index) as usize;
+        
+        // In heads-up: dealer posts small blind, non-dealer posts big blind
+        require!(
+            self.player_stacks[dealer_index] >= self.small_blind,
+            GameError::InsufficientStack
+        );
+        require!(
+            self.player_stacks[non_dealer_index] >= self.big_blind,
+            GameError::InsufficientStack
+        );
+        
+        // Deduct blinds from stacks
+        self.player_stacks[dealer_index] -= self.small_blind;
+        self.player_stacks[non_dealer_index] -= self.big_blind;
+        
+        // Add to pot and track bets
+        self.hand.pot = self.small_blind + self.big_blind;
+        self.hand.bets[dealer_index] = self.small_blind;
+        self.hand.bets[non_dealer_index] = self.big_blind;
+        
+        Ok(())
+    }
+    
+    /// Check if betting round is complete
     pub fn is_betting_round_complete(&self) -> bool {
-        // Both players have acted and bets are equal, or someone folded/is all-in
-        if self.player1_folded || self.player2_folded {
+        // If someone folded, round is complete
+        if self.hand.player_folded[0] || self.hand.player_folded[1] {
             return true;
         }
         
-        if self.player1_all_in || self.player2_all_in {
+        // If both players are all-in, round is complete
+        if self.hand.player_all_in[0] && self.hand.player_all_in[1] {
             return true;
         }
-
-        // Check if both players have equal bets and both have acted
-        self.player1_current_bet == self.player2_current_bet && 
-        self.last_action != PlayerActionType::None
-    }
-
-    pub fn get_other_player(&self, player: &Pubkey) -> Pubkey {
-        if player == &self.player1 {
-            self.player2
-        } else {
-            self.player1
-        }
-    }
-
-    pub fn is_player_turn(&self, player: &Pubkey) -> bool {
-        if self.current_player == 1 {
-            player == &self.player1
-        } else {
-            player == &self.player2
-        }
-    }
-
-    /// Verify encrypted card matches plaintext by re-encrypting with both player keys
-    /// This is the core verification logic for the mental poker protocol
-    pub fn verify_card(
-        &self,
-        plaintext_card: u8,
-        encrypted_card: &EncryptedCard,
-    ) -> bool {
-        // Get the prime modulus
-        let prime = get_prime();
         
-        // Convert plaintext card to U256 (cards are 0-51)
-        // Map card to a value in the valid range (2 to prime-1)
-        // We add 2 to ensure we're never 0 or 1
-        let plaintext = U256::from_u64(plaintext_card as u64 + 2);
-        
-        // Convert player keys from bytes to U256 (big-endian)
-        let player1_key = U256::from_be_bytes(self.player1_ephemeral_pubkey.data);
-        let player2_key = U256::from_be_bytes(self.player2_ephemeral_pubkey.data);
-        
-        // Validate that keys are in valid range (2 to prime-1)
-        let two = U256::from_u64(2);
-        if player1_key < two || player1_key >= prime {
-            return false;
-        }
-        if player2_key < two || player2_key >= prime {
-            return false;
-        }
-        
-        // First encryption: plaintext^player1_key mod prime
-        let encrypted_once = modpow(&plaintext, &player1_key, &prime);
-        
-        // Second encryption: encrypted_once^player2_key mod prime
-        // This is the commutative property: (m^a)^b = (m^b)^a mod p
-        let encrypted_twice = modpow(&encrypted_once, &player2_key, &prime);
-        
-        // Convert the stored encrypted card to U256 for comparison
-        let expected_encrypted = U256::from_be_bytes(encrypted_card.data);
-        
-        // Verify that our computed encryption matches the stored value
-        encrypted_twice == expected_encrypted
+        // If bets are equal and both players have acted
+        self.hand.bets[0] == self.hand.bets[1]
     }
     
-    /// Get encrypted cards for flop (indices 4, 5, 6)
-    pub fn get_flop_encrypted_cards(&self) -> [EncryptedCard; 3] {
-        [
-            self.encrypted_cards[4],
-            self.encrypted_cards[5],
-            self.encrypted_cards[6],
-        ]
-    }
-    
-    /// Get encrypted card for turn (index 7)
-    pub fn get_turn_encrypted_card(&self) -> EncryptedCard {
-        self.encrypted_cards[7]
-    }
-    
-    /// Get encrypted card for river (index 8)
-    pub fn get_river_encrypted_card(&self) -> EncryptedCard {
-        self.encrypted_cards[8]
-    }
-    
-    /// Get encrypted cards for player 1's hand (indices 0, 1)
-    pub fn get_player1_encrypted_cards(&self) -> [EncryptedCard; 2] {
-        [self.encrypted_cards[0], self.encrypted_cards[1]]
-    }
-    
-    /// Get encrypted cards for player 2's hand (indices 2, 3)
-    pub fn get_player2_encrypted_cards(&self) -> [EncryptedCard; 2] {
-        [self.encrypted_cards[2], self.encrypted_cards[3]]
-    }
-    
-    /// Verify a Merkle proof for a card in the deck
-    /// Proves that a singly-encrypted card was part of Player 1's committed deck
-    pub fn verify_merkle_proof(
-        card: &EncryptedCard,
-        proof: &[[u8; 32]],
-        root: &[u8; 32],
-        index: usize,
-    ) -> bool {
-        // Start with the leaf hash (hash of the card data)
-        let mut current_hash = keccak::hash(&card.data).to_bytes();
-        let mut current_index = index;
+    /// Advance to next betting round
+    pub fn advance_betting_round(&mut self) {
+        // Move pot forward, reset bets
+        self.hand.bets = [0, 0];
         
-        // Process each proof element
-        for proof_element in proof {
-            // Determine if we hash (current || proof) or (proof || current)
-            // based on whether current_index is even or odd
-            let combined = if current_index % 2 == 0 {
-                // Current is left child, proof is right sibling
-                let mut data = [0u8; 64];
-                data[..32].copy_from_slice(&current_hash);
-                data[32..].copy_from_slice(proof_element);
-                data
-            } else {
-                // Current is right child, proof is left sibling
-                let mut data = [0u8; 64];
-                data[..32].copy_from_slice(proof_element);
-                data[32..].copy_from_slice(&current_hash);
-                data
-            };
-            
-            // Hash the combined data
-            current_hash = keccak::hash(&combined).to_bytes();
-            
-            // Move up the tree
-            current_index /= 2;
+        // Advance the betting round
+        self.hand.betting_round = match self.hand.betting_round {
+            BettingRound::PreFlop => BettingRound::Flop,
+            BettingRound::Flop => BettingRound::Turn,
+            BettingRound::Turn => BettingRound::River,
+            BettingRound::River => BettingRound::River, // Stay at river
+        };
+        
+        // Update stage
+        self.hand.stage = match self.hand.betting_round {
+            BettingRound::PreFlop => HandStage::PreFlopBetting,
+            BettingRound::Flop => HandStage::FlopBetting,
+            BettingRound::Turn => HandStage::TurnBetting,
+            BettingRound::River => HandStage::RiverBetting,
+        };
+    }
+    
+    /// Switch turn to the other player
+    pub fn switch_turn(&mut self) {
+        self.hand.current_turn_index = 1 - self.hand.current_turn_index;
+    }
+    
+    /// Store a ZK proof optimistically (not verified immediately)
+    pub fn store_proof(
+        &mut self,
+        proof_type: ProofType,
+        submitter_index: u8,
+        proof: ZkProof,
+        clock: &Clock,
+    ) -> Result<()> {
+        let new_proof = StoredProof {
+            proof_type,
+            submitter_index,
+            proof,
+            submitted_at: clock.unix_timestamp,
+        };
+        
+        for entry in self.hand.stored_proofs.iter_mut() {
+            if entry.is_none() {
+                *entry = Some(new_proof);
+                return Ok(());
+            }
         }
         
-        // Check if the computed root matches the stored root
-        current_hash == *root
+        err!(GameError::MaxProofsReached)
+    }
+    
+    /// Reveal a community card (store partially decrypted version)
+    pub fn reveal_card(
+        &mut self,
+        card_index: u8,
+        partially_decrypted: PartiallyDecryptedCard,
+    ) -> Result<()> {
+        for entry in self.hand.revealed_cards.iter_mut() {
+            if entry.is_none() {
+                *entry = Some((card_index, partially_decrypted));
+                return Ok(());
+            }
+        }
+        err!(GameError::MaxCardsReached)
+    }
+    
+    /// Finalize a community card (store fully decrypted plaintext)
+    pub fn finalize_community_card(&mut self, position: usize, card: u8) -> Result<()> {
+        require!(position < 5, GameError::InvalidCardPosition);
+        self.hand.community_cards[position] = Some(card);
+        Ok(())
+    }
+    
+    /// Reveal pocket cards at showdown
+    pub fn reveal_pocket_cards(&mut self, player_index: u8, cards: [u8; 2]) -> Result<()> {
+        require!(player_index < 2, GameError::InvalidPlayerIndex);
+        self.hand.pocket_cards[player_index as usize] = Some(cards);
+        self.hand.player_revealed_showdown[player_index as usize] = true;
+        Ok(())
+    }
+    
+    /// Award pot to winner
+    pub fn award_pot(&mut self, winner_index: u8) -> Result<()> {
+        require!(winner_index < 2, GameError::InvalidPlayerIndex);
+        self.player_stacks[winner_index as usize] += self.hand.pot;
+        self.hand.pot = 0;
+        Ok(())
+    }
+    
+    /// Split pot (tie)
+    pub fn split_pot(&mut self) {
+        let half_pot = self.hand.pot / 2;
+        self.player_stacks[0] += half_pot;
+        self.player_stacks[1] += half_pot;
+        // Handle odd chip
+        if self.hand.pot % 2 == 1 {
+            // Give odd chip to dealer (standard poker rule)
+            self.player_stacks[self.hand.dealer_index as usize] += 1;
+        }
+        self.hand.pot = 0;
     }
 }
 
-// Helper functions for Pohlig-Hellman encryption (can be used by clients)
-impl GameState {
-    /// Encrypt a card value using a public key
-    /// This performs: card^key mod prime
-    pub fn encrypt_card(card: u8, public_key: &EphemeralPubkey) -> EncryptedCard {
-        let prime = get_prime();
-        
-        // Map card value (0-51) to valid range (2 to prime-1)
-        let plaintext = U256::from_u64(card as u64 + 2);
-        let key = U256::from_be_bytes(public_key.data);
-        
-        // Perform modular exponentiation
-        let encrypted = modpow(&plaintext, &key, &prime);
-        
-        // Convert result to 32-byte array (big-endian)
-        let result = encrypted.to_be_bytes();
-        
-        EncryptedCard { data: result }
-    }
-    
-    /// Encrypt already-encrypted bytes (for second layer of encryption)
-    /// This performs: encrypted_value^key mod prime
-    /// Used when Player 2 encrypts Player 1's already-encrypted cards
-    pub fn encrypt_card_bytes(encrypted_bytes: &[u8; 32], public_key: &EphemeralPubkey) -> EncryptedCard {
-        let prime = get_prime();
-        
-        // Convert encrypted bytes to U256
-        let encrypted_value = U256::from_be_bytes(*encrypted_bytes);
-        let key = U256::from_be_bytes(public_key.data);
-        
-        // Perform modular exponentiation on the already-encrypted value
-        let double_encrypted = modpow(&encrypted_value, &key, &prime);
-        
-        // Convert result to 32-byte array (big-endian)
-        let result = double_encrypted.to_be_bytes();
-        
-        EncryptedCard { data: result }
-    }
-    
-    /// Decrypt a card using a private key (for off-chain use only)
-    /// This computes the modular multiplicative inverse: card = encrypted^(key^-1) mod prime
-    /// Note: This requires computing the private key inverse, which is expensive
-    pub fn decrypt_card(encrypted: &EncryptedCard, private_key: &[u8; 32]) -> Option<u8> {
-        let prime = get_prime();
-        let encrypted_val = U256::from_be_bytes(encrypted.data);
-        let key = U256::from_be_bytes(*private_key);
-        
-        // Compute modular inverse of the key using Fermat's little theorem
-        // For prime p: key^-1 = key^(p-2) mod p
-        let prime_minus_two = prime.wrapping_sub(&U256::from_u64(2));
-        let inv_key = modpow(&key, &prime_minus_two, &prime);
-        
-        // Decrypt: plaintext = encrypted^(key^-1) mod prime
-        let plaintext = modpow(&encrypted_val, &inv_key, &prime);
-        
-        // Convert back to card value (subtract 2 to get 0-51)
-        // Extract the low 64 bits
-        let card_plus_2 = plaintext.as_words()[0];
-        if card_plus_2 >= 2 && card_plus_2 <= 53 {
-            return Some((card_plus_2 - 2) as u8);
+impl Default for Game {
+    fn default() -> Self {
+        Game {
+            players: [Pubkey::default(); 2],
+            paillier_pks: [PaillierPublicKey::default(); 2],
+            player_stacks: [0; 2],
+            current_hand_id: 0,
+            game_status: GameStatus::Pending,
+            token_vault: Pubkey::default(),
+            vault_bump: 0,
+            small_blind: 0,
+            big_blind: 0,
+            action_timeout: 0,
+            invited_opponent: None,
+            hand: HandState::default(),
+            bump: 0,
+            last_action_timestamp: 0,
         }
-        
-        None
     }
 }
 
+/// Custom error codes for game logic
+#[error_code]
+pub enum GameError {
+    #[msg("Invalid player index")]
+    InvalidPlayerIndex,
+    #[msg("Invalid player")]
+    InvalidPlayer,
+    #[msg("Insufficient stack")]
+    InsufficientStack,
+    #[msg("Invalid card position")]
+    InvalidCardPosition,
+    #[msg("Maximum number of proofs have been stored for this hand")]
+    MaxProofsReached,
+    #[msg("Maximum number of cards have been revealed for this hand")]
+    MaxCardsReached,
+}

@@ -65,8 +65,8 @@ pub struct HandState {
 
     // Cryptographic commitment from Player A (non-dealer) for this hand's deck
     pub deck_merkle_root: [u8; 32],
-    // The full 52-card deck, committed to by Player B (dealer) + ZKP
-    pub deck: Vec<EncryptedCard>,
+    // Cryptographic commitment from Player B (dealer) for the final deck
+    pub doubly_encrypted_deck_merkle_root: [u8; 32],
 
     // Betting state for the hand
     pub pot: u64,
@@ -92,11 +92,11 @@ pub struct HandState {
     -   `join_game(paillier_pk)`: Player B joins a game, setting their Paillier key and funding their stack.
 -   **Hand Lifecycle**:
     -   `create_hand(merkle_root, proof)`: The non-dealer starts a new hand, posting blinds and committing to their deck. The `ProveCorrectDeckCreation` ZKP is **verified on-chain immediately**.
-    -   `join_hand(deck, reshuffle_proof, p1_cards, decryption_proof)`: The dealer joins the hand, submitting the final deck, revealing Player A's cards, and posting their blind. The ZKPs are stored optimistically.
+    -   `join_hand(deck_root, reshuffle_proof, p1_cards, decryption_proof)`: The dealer joins the hand by submitting the **merkle root** of the final deck, revealing Player A's cards, and posting their blind. The ZKPs are stored optimistically.
 -   **Gameplay**:
-    -   `player_action(action, card_reveal_data)`: A single instruction for all betting moves (check, call, bet, etc.). If the action starts or ends a betting round (i.e., first bet or call), `card_reveal_data` must be provided, containing the next singly-decrypted or doubly-decrypted (correspondingly) community card(s) and their `ProveCorrectDecryption` ZKP(s).
+    -   `player_action(action, card_reveal_data)`: A single instruction for all betting moves. If the action triggers a card reveal, `card_reveal_data` must be provided. This data now includes: the decrypted card, its `ProveCorrectDecryption` ZKP, the original **doubly-encrypted card**, and its **merkle proof** to verify it against the stored deck root.
 -   **Showdown & Resolution**:
-    -   `showdown(pocket_cards, proof)`: After the final betting round, each player calls this to reveal their plaintext pocket cards and provide the final `ProveCorrectDecryption` ZKP.
+    -   `showdown(pocket_cards, proof, encrypted_cards, merkle_proofs)`: Each player calls this to reveal their plaintext pocket cards. They must also provide the original doubly-encrypted cards and their merkle proofs.
     -   `resolve_hand()`: After both players have revealed their hands, either player can call this to trigger the on-chain hand evaluation and pot distribution.
 -   **Disputes & Match End**:
     -   `claim_timeout(disputed_action)`: A player challenges an opponent's optimistic action. This triggers the on-chain verification of the relevant stored ZKP. If the proof fails, the challenger wins the pot.
@@ -116,15 +116,15 @@ The client application is responsible for all cryptography and for presenting a 
 
 -   **b. The Secure Shuffle (One Mandatory, One Optimistic Proof)**:
     -   **Player A's Client (Creator)**: Generates a 52-card deck, encrypts it with `pk_A`, and builds a Merkle tree. It then generates a `ProveCorrectDeckCreation` ZKP. It calls `commit_deck(merkle_root, proof)`. The on-chain program verifies this proof immediately. **If the proof is invalid, the transaction fails, and the hand cannot begin.** Player A then sends the 52 ciphertexts to Player B off-chain.
-    -   **Player B's Client (Dealer)**: Receives the 52 ciphertexts and validates them against the on-chain Merkle root. It then shuffles, re-encrypts them, and generates a `ProveCorrectReshuffle` ZKP. It calls `set_shuffled_deck(deck, proof)`. This proof is **not** verified on-chain unless a dispute is raised.
+    -   **Player B's Client (Dealer)**: Receives the 52 ciphertexts and validates them against the on-chain Merkle root. It then shuffles, re-encrypts them, computes a merkle root of this final deck, and generates a `ProveCorrectReshuffle` ZKP. It calls `join_hand(deck_root, proof, ...)` to commit to the final deck.
 
-    **c. Gameplay (Optimistic)**:
-    -   Betting proceeds via the `bet` instruction.
-    -   When a card is revealed, the player submits the decrypted data and the `ProveCorrectDecryption` ZKP to the contract. The proof is not verified unless disputed.
+    **c. Gameplay (Optimistic with On-Chain Verification)**:
+    -   Betting proceeds via the `player_action` instruction.
+    -   When a card is revealed, the player submits the decrypted data, the ZKP, the original encrypted card, and its merkle proof. The on-chain program **must** verify the merkle proof immediately to ensure the card is from the committed deck before accepting the action. The ZKP remains optimistic.
 
     **d. Showdown**:
-    -   Players reveal their pocket cards, submitting the plaintext and the final `ProveCorrectDecryption` ZKPs.
-    -   If no disputes are raised, either player calls `resolve_hand()`. The contract uses its on-chain logic to determine the winner and award the pot.
+    -   Players reveal their pocket cards via the `showdown` instruction, providing all data required to prove the cards are legitimate (plaintext, ZKP, encrypted card, merkle proof).
+    -   If no disputes are raised, either player calls `resolve_hand()` to trigger the final on-chain evaluation.
 
     **e. Loop**: A new hand can be started.
 
