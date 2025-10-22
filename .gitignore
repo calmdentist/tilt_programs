@@ -7,3 +7,5 @@ node_modules
 test-ledger
 .yarn
 validator.log
+yarn.lock
+package-lock.json

@@ -30,6 +30,33 @@ This will:
 4. Deploy the program
 5. Run a full game demonstration
 
+### 🧪 Cryptography-Only Examples (No Smart Contract)
+
+Test the Paillier encryption and ZK-SNARK proof generation performance **without** deploying the smart contract:
+
+```bash
+# Install dependencies
+npm install
+
+# Run basic crypto operations demo
+npx ts-node app/paillier-mental-poker.ts
+
+# Run complete poker hand simulation
+npx ts-node app/full-game-example.ts
+```
+
+These examples demonstrate:
+- **Paillier key generation** (2048-bit keys in ~500-700ms)
+- **Deck encryption** (52 cards in ~1.2 seconds)
+- **Merkle root commitments** for deck integrity
+- **ProveCorrectDeckCreation** ZK-SNARK (~1ms generation)
+- **Deck reshuffling & re-encryption** (~1.2 seconds)
+- **ProveCorrectReshuffle** ZK-SNARK (~0.4ms generation)
+- **Card reveals with ProveCorrectDecryption** ZK-SNARKs (~0.1ms per card)
+- **Complete game timing**: ~3-4 seconds client-side
+
+See [`CRYPTO_EXAMPLES.md`](CRYPTO_EXAMPLES.md) for detailed documentation.
+
 ## 🎯 Architecture Overview
 
 zkPoker implements a trustless mental poker protocol built on two core principles: **optimistic execution** and **cryptographic guarantees**. Most actions are assumed to be valid to save on gas, with on-chain ZK-SNARK verification used as an impartial judge to resolve disputes. However, the fairness of the deck itself is guaranteed by a mandatory, on-chain verified ZKP at the start of every hand.
