@@ -2,7 +2,7 @@
 
 Featuring:
 - **2-player heads-up poker** will expand to multiplayer in the future
-- **Commutative Encryption** Pohlig-Hellman for provable fairness
+- **Commutative Encryption** Paillier's cryptosystem for provable fairness
 - **Complete poker hand evaluation** with standard Texas Hold'em rules
 - **Time-limited actions** with timeout protection
 - **Bespoke architecture** only 1 txn to create/join game and each betting round
@@ -32,85 +32,39 @@ This will:
 
 ## 🎯 Architecture Overview
 
-zkPoker implements a trustless mental poker protocol using **Pohlig-Hellman commutative encryption**. The protocol ensures card privacy and fairness without requiring a trusted dealer.
+zkPoker implements a trustless mental poker protocol built on two core principles: **optimistic execution** and **cryptographic guarantees**. Most actions are assumed to be valid to save on gas, with on-chain ZK-SNARK verification used as an impartial judge to resolve disputes. However, the fairness of the deck itself is guaranteed by a mandatory, on-chain verified ZKP at the start of every hand.
 
-### The Protocol
+For complete details, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-#### Phase 1: Game Setup & Deck Shuffling
+### Core Cryptography
 
-1. **Key Generation**: Both players generate ephemeral keypairs for Pohlig-Hellman encryption
-2. **Player 1 Setup**:
-   - Shuffles a standard 52-card deck
-   - Encrypts each card with their private key
-   - Computes a **Merkle root** of the encrypted deck
-   - Creates game on-chain with their public key and Merkle root
-   - Passes encrypted deck to Player 2 off-chain
+-   **Commutative Encryption (Paillier)**: We use the Paillier cryptosystem because it is **probabilistic**. This means encrypting the same card multiple times produces different ciphertexts, a critical feature that prevents brute-force attacks.
+-   **Zero-Knowledge Proofs (Groth16 ZK-SNARKs)**: We use Groth16 proofs because they are extremely small and efficient to verify on-chain. This makes our dispute resolution mechanism fast and affordable.
 
-3. **Player 2 Join**:
-   - Re-shuffles Player 1's encrypted deck
-   - Applies second layer of encryption with their key
-   - Selects 9 cards needed (4 pocket + 5 community)
-   - Generates **Merkle proofs** for each card
-   - Submits doubly-encrypted cards + proofs on-chain
-   - Program verifies proofs against stored Merkle root
+### The Protocol in Brief
 
-**Result**: 9 doubly-encrypted cards committed on-chain, provably from the original deck. Neither player knows plaintext values or can manipulate deck composition.
+1.  **Match Setup**: Two players join a game, each depositing funds and committing their Paillier public key to the on-chain `Game` account.
 
-#### Phase 2: Gameplay
+2.  **The Secure Shuffle**:
+    -   **Player A** (creator) creates a 52-card deck, encrypts it, and submits its **merkle root** to the contract. This is accompanied by a mandatory `ProveCorrectDeckCreation` ZKP, which is **verified on-chain immediately** to guarantee the deck is fair.
+    -   **Player B** (dealer) receives the encrypted deck off-chain, re-shuffles and re-encrypts it, and submits the **merkle root** of this final deck to the contract, along with an optimistic `ProveCorrectReshuffle` ZKP.
 
-**Pocket Cards (Off-Chain)**:
-- Player 2 sends Player 1's cards (decrypted once) off-chain
-- Player 1's client **must verify** by re-encrypting and checking against on-chain values
-- If verification fails, Player 1 can claim timeout
-- Process mirrors for Player 2's cards
+3.  **Optimistic Gameplay**: Players take turns betting. When a card is revealed, the player provides the decrypted data and an optimistic `ProveCorrectDecryption` ZKP. Opponents' clients verify these proofs off-chain.
 
-**Community Cards (On-Chain)**:
-- Two-step progressive reveal for Flop, Turn, River:
-  1. Player 1 submits decryption share
-  2. Player 2 submits decryption share + plaintext
-- Program **immediately verifies** by re-encrypting plaintext and comparing to stored encrypted version
-- Distributes compute load across transactions
-- Timeouts enforce liveness
-
-**Betting**:
-- Standard on-chain actions (Fold, Check, Call, Raise)
-- Funds transferred to shared pot account
-
-#### Phase 3: Showdown & Verification
-
-1. **Card Reveal**: Players reveal plaintext pocket cards
-2. **On-Chain Verification**: Program re-encrypts revealed cards with both keys and verifies against stored doubly-encrypted values
-3. **Winner Determination**: Program evaluates verified hands using standard poker rankings and distributes pot
+4.  **Dispute & Resolution**: If a client detects an invalid proof, the player calls `claim_timeout`. This forces an on-chain verification of the disputed ZKP. If it fails, the cheater forfeits the pot.
 
 ### Core Instructions
 
-- **`create_game`** - P1 initializes game with public key and Merkle root
-- **`join_game`** - P2 submits encrypted cards and Merkle proofs
-- **`reveal_community_cards`** - Two-step card reveal with verification
-- **`player_action`** - Betting actions (Fold, Check, Call, Raise)
-- **`advance_street`** - Progress to next betting round
-- **`resolve_hand`** - Showdown verification and winner determination
-- **`claim_timeout`** - Win by timeout if opponent doesn't act
-
-### Game State Progression
-
-1. `WaitingForPlayer2` → P1 creates game
-2. `PreFlopBetting` → P2 joins, blinds posted
-3. `AwaitingFlopReveal` → Betting complete
-4. `PostFlopBetting` → Flop revealed and verified
-5. `AwaitingTurnReveal` → Betting complete
-6. `PostTurnBetting` → Turn revealed and verified
-7. `AwaitingRiverReveal` → Betting complete
-8. `PostRiverBetting` → River revealed and verified
-9. `Showdown` → Final betting complete
-10. `Finished` → Winner determined, pot distributed
+-   **Match Setup**: `create_game`, `join_game`
+-   **Hand Lifecycle**: `create_hand`, `join_hand`
+-   **Gameplay**: `player_action`
+-   **Showdown & Resolution**: `showdown`, `resolve_hand`
+-   **Disputes & Match End**: `claim_timeout`, `leave_game`
 
 ### Security Features
 
-- **Provable Fairness**: Merkle proofs ensure deck integrity
-- **Progressive Verification**: Cards verified immediately upon reveal (~400k CUs per verification)
-- **Timeout Protection**: Player bonds forfeit if actions not taken in time
-- **No Trusted Dealer**: Fully trustless cryptographic protocol
-- **Client-Side Validation**: Critical verifications happen off-chain with on-chain enforcement
-
-For complete details, see [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`MANIFESTO.md`](MANIFESTO.md).
+-   **Provable Deck Fairness**: Mandatory ZKP on deck creation prevents stacked/duplicate cards.
+-   **Trustless Dispute Resolution**: Optimistic ZKPs allow any player to police cheating.
+-   **No Trusted Dealer**: The protocol is fully trustless and managed by the two players.
+-   **Client-Side Validation**: Ensures immediate detection of invalid actions off-chain.
+-   **Timeout Protection**: Liveness is enforced by on-chain timeouts for all actions.
