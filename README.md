@@ -49,9 +49,14 @@ For complete details, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
     -   **Player A** (creator) creates a 52-card deck, encrypts it, and submits its **merkle root** to the contract. This is accompanied by a mandatory `ProveCorrectDeckCreation` ZKP, which is **verified on-chain immediately** to guarantee the deck is fair.
     -   **Player B** (dealer) receives the encrypted deck off-chain, re-shuffles and re-encrypts it, and submits the **merkle root** of this final deck to the contract, along with an optimistic `ProveCorrectReshuffle` ZKP.
 
-3.  **Optimistic Gameplay**: Players take turns betting. When a card is revealed, the player provides the decrypted data and an optimistic `ProveCorrectDecryption` ZKP. Opponents' clients verify these proofs off-chain.
+3.  **Dealing Pocket Cards**: To maintain privacy while ensuring fairness, pocket cards are dealt by having each player submit the other's singly-decrypted cards to the contract.
+    -   In `join_hand`, the dealer (Player B) submits the singly-decrypted versions of Player A's pocket cards, along with a `ProveCorrectDecryption` ZKP. This data is stored optimistically on-chain.
+    -   In their first `player_action`, Player A does the same for Player B.
+    -   Each player's client can then fetch their own singly-encrypted cards from the contract, decrypt them with their private key to get the plaintext, and verify the accompanying ZKP. This ensures pocket cards are never revealed publicly on-chain until the showdown.
 
-4.  **Dispute & Resolution**: If a client detects an invalid proof, the player calls `claim_timeout`. This forces an on-chain verification of the disputed ZKP. If it fails, the cheater forfeits the pot.
+4.  **Optimistic Gameplay**: Players take turns betting. When a community card is revealed, the player provides the decrypted data and an optimistic `ProveCorrectDecryption` ZKP. Opponents' clients verify these proofs off-chain.
+
+5.  **Dispute & Resolution**: If a client detects an invalid proof, the player calls `claim_timeout`. This forces an on-chain verification of the disputed ZKP. If it fails, the cheater forfeits the pot.
 
 ### Core Instructions
 
